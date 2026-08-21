@@ -19,7 +19,7 @@ const EXPECTED_UPSTREAM_TOOL_COUNTS: Record<UpstreamId, number> = {
   stock_data: 10,
   fund_data: 10,
   index_data: 6,
-  economic_data: 1,
+  economic_data: 2,
   financial_docs: 2,
   analytics_data: 1,
 };
@@ -45,7 +45,7 @@ describe("Wind upstream registry", () => {
     expect(Object.keys(UPSTREAMS)).not.toContain("bond_data");
   });
 
-  it("uses HTTPS, unique paths, and a total expected tool count of 30", () => {
+  it("uses HTTPS, unique paths, and a total expected tool count of 31", () => {
     const definitions = Object.values(UPSTREAMS);
 
     expect(definitions).toHaveLength(6);
@@ -53,7 +53,7 @@ describe("Wind upstream registry", () => {
     expect(new Set(definitions.map(({ url }) => url.pathname)).size).toBe(6);
     expect(
       definitions.reduce((total, { expectedToolCount }) => total + expectedToolCount, 0),
-    ).toBe(30);
+    ).toBe(31);
   });
 
   it("assigns the exact expected tool count to each upstream", () => {

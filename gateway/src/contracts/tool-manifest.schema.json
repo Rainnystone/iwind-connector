@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aifin.local/schemas/tool-manifest-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "capturedAt", "sourceCommit", "upstreams"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "sourceCommit": { "const": "f9e3d4d066f11152a1519559d12f388a75b44410" },
+    "upstreams": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/upstream" }
+    }
+  },
+  "$defs": {
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "url", "transport", "serverInfo", "tools"],
+      "properties": {
+        "id": {
+          "enum": [
+            "stock_data",
+            "fund_data",
+            "index_data",
+            "economic_data",
+            "financial_docs",
+            "analytics_data"
+          ]
+        },
+        "url": { "type": "string", "format": "uri" },
+        "transport": { "const": "streamable-http" },
+        "serverInfo": { "type": "object" },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/tool" }
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "inputSchema"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "inputSchema": {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "object" } }
+        }
+      }
+    }
+  }
+}

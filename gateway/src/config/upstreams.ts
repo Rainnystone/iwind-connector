@@ -21,7 +21,7 @@ export const UPSTREAMS: Readonly<Record<UpstreamId, UpstreamDefinition>> = {
   economic_data: {
     id: "economic_data",
     url: new URL("https://mcp.wind.com.cn/vserver_economic_data/mcp/"),
-    expectedToolCount: 1,
+    expectedToolCount: 2,
   },
   financial_docs: {
     id: "financial_docs",
