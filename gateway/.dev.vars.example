@@ -1,0 +1,3 @@
+# Sentinel values for local type generation only. Never place a real credential here.
+WIND_API_KEY_01=local-development-sentinel-01
+WIND_API_KEY_02=local-development-sentinel-02

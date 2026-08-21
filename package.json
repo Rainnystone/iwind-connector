@@ -1,0 +1,38 @@
+{
+  "name": "iwind-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.13.1"
+  },
+  "scripts": {
+    "types": "wrangler types --config gateway/wrangler.jsonc gateway/src/worker-configuration.d.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:unit": "vitest run gateway/test",
+    "build": "wrangler deploy --dry-run --config gateway/wrangler.jsonc"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.10.3",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/core": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.21.0",
+    "ajv": "8.20.0",
+    "jose": "6.2.9"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.0.0",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.1",
+    "fflate": "0.8.3",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11",
+    "wrangler": "4.125.0"
+  }
+}
