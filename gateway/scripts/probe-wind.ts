@@ -9,6 +9,11 @@ import type {
 } from "../src/contracts/load-manifest";
 import { SOURCE_COMMIT, TOOL_SEED } from "../src/contracts/tool-seed";
 import {
+  assertToolInputSchemas,
+  InvalidToolInputSchemaError,
+  invalidToolInputSchemaDetails,
+} from "../src/contracts/validate-tool-schema";
+import {
   createWindSessionFactory,
   summarizeCapabilities,
   type WindProbeSession,
@@ -183,9 +188,18 @@ try {
     maxObservedUpstreamConcurrency,
   }, null, 2)}\n`);
 } catch (error) {
-  const failure = error instanceof ContractMismatch
-    ? { status: "stop-gate", reason: error.reason, mismatch: error.metadata }
-    : { status: "failed", reason: "upstream-probe-failed" };
+  const schemaFailure = error instanceof InvalidToolInputSchemaError
+    ? invalidToolInputSchemaDetails(error)
+    : undefined;
+  const failure = schemaFailure
+    ? {
+        status: "stop-gate",
+        reason: schemaFailure.code,
+        mismatch: { domain: schemaFailure.domain, tool: schemaFailure.tool },
+      }
+    : error instanceof ContractMismatch
+      ? { status: "stop-gate", reason: error.reason, mismatch: error.metadata }
+      : { status: "failed", reason: "upstream-probe-failed" };
   process.stderr.write(`${JSON.stringify(failure)}\n`);
   process.exitCode = 1;
 }
@@ -236,14 +250,8 @@ function validateTools(
     if (tool.description.trim().length === 0) {
       throw new ContractMismatch("empty-tool-description", { domain: upstream.id, tool: tool.name });
     }
-    if (tool.inputSchema.type !== "object") {
-      throw new ContractMismatch("non-object-input-schema", {
-        domain: upstream.id,
-        tool: tool.name,
-        actualType: tool.inputSchema.type ?? "missing",
-      });
-    }
   }
+  assertToolInputSchemas([{ id: upstream.id, tools }]);
   return tools;
 }
 

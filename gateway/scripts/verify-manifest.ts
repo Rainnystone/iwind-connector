@@ -6,6 +6,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { UPSTREAMS } from "../src/config/upstreams";
 import type { ToolManifestV1 } from "../src/contracts/load-manifest";
 import { SOURCE_COMMIT, TOOL_SEED } from "../src/contracts/tool-seed";
+import {
+  assertToolInputSchemas,
+  InvalidToolInputSchemaError,
+  invalidToolInputSchemaDetails,
+} from "../src/contracts/validate-tool-schema";
 
 const manifestUrl = new URL("../src/contracts/tool-manifest.json", import.meta.url);
 const schemaUrl = new URL("../src/contracts/tool-manifest.schema.json", import.meta.url);
@@ -21,6 +26,7 @@ try {
   const schema: unknown = JSON.parse(schemaBytes);
   const validate = new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(schema);
   if (!validate(manifest)) throw new Error("schema-validation-failed");
+  assertToolInputSchemas(manifest.upstreams);
 
   const actualHash = createHash("sha256").update(manifestBytes).digest("hex");
   if (actualHash !== hashBytes.trim()) throw new Error("sha256-mismatch");
@@ -43,8 +49,11 @@ try {
   }
   if (names.length !== 31 || new Set(names).size !== 31) throw new Error("tool-uniqueness-mismatch");
   process.stdout.write("PASS manifest schema/hash/seed: 6 upstreams, 31 unique tools\n");
-} catch {
-  process.stderr.write("FAIL manifest verification\n");
+} catch (error) {
+  const failure = error instanceof InvalidToolInputSchemaError
+    ? { status: "failed", ...invalidToolInputSchemaDetails(error) }
+    : { status: "failed", code: "manifest-verification-failed" };
+  process.stderr.write(`${JSON.stringify(failure)}\n`);
   process.exitCode = 1;
 }
 

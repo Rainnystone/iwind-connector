@@ -7,6 +7,11 @@ import { describe, expect, it } from "vitest";
 import { UPSTREAMS } from "../../src/config/upstreams";
 import { loadManifest } from "../../src/contracts/load-manifest";
 import { TOOL_SEED } from "../../src/contracts/tool-seed";
+import {
+  assertToolInputSchemas,
+  InvalidToolInputSchemaError,
+  invalidToolInputSchemaDetails,
+} from "../../src/contracts/validate-tool-schema";
 import probeFixture from "../fixtures/probe-success.json";
 
 const manifestPath = new URL("../../src/contracts/tool-manifest.json", import.meta.url);
@@ -14,7 +19,7 @@ const schemaPath = new URL("../../src/contracts/tool-manifest.schema.json", impo
 const hashPath = new URL("../../src/contracts/tool-manifest.sha256", import.meta.url);
 
 describe("frozen Wind tool manifest", () => {
-  it("matches the six upstream registry entries and frozen 30-name seed", () => {
+  it("matches the six upstream registry entries and frozen 31-name seed", () => {
     const manifest = loadManifest();
     const expectedIds = Object.keys(UPSTREAMS);
     const expectedNames = probeFixture.upstreams.flatMap(({ toolNames }) => toolNames);
@@ -48,6 +53,41 @@ describe("frozen Wind tool manifest", () => {
     }
 
     expect(owners.size).toBe(31);
+    expect(() => assertToolInputSchemas(manifest.upstreams)).not.toThrow();
+  });
+
+  it("fails closed with only a stable code, domain, and tool for an invalid embedded schema", () => {
+    const manifest = structuredClone(loadManifest());
+    const upstream = manifest.upstreams[0];
+    const tool = upstream?.tools[0];
+    expect(upstream).toBeDefined();
+    expect(tool).toBeDefined();
+    if (!upstream || !tool) throw new Error("fixture-missing-tool");
+
+    tool.inputSchema = {
+      type: "object",
+      properties: { windcode: { type: "string", pattern: "[" } },
+    };
+
+    try {
+      assertToolInputSchemas(manifest.upstreams);
+      throw new Error("expected-schema-verification-failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidToolInputSchemaError);
+      expect(error).toMatchObject({
+        code: "invalid-tool-input-schema",
+        domain: upstream.id,
+        tool: tool.name,
+      });
+      expect((error as Error).message).toBe("invalid-tool-input-schema");
+      expect(invalidToolInputSchemaDetails(error as InvalidToolInputSchemaError)).toEqual({
+        code: "invalid-tool-input-schema",
+        domain: upstream.id,
+        tool: tool.name,
+      });
+      expect(JSON.stringify(invalidToolInputSchemaDetails(error as InvalidToolInputSchemaError))).not
+        .toContain('pattern":"["');
+    }
   });
 
   it("validates against its JSON Schema and matches its SHA-256 sidecar", async () => {
