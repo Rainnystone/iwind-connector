@@ -1,0 +1,13 @@
+{
+  "resource": "http://localhost:8787/mcp",
+  "authorization_servers": [
+    "http://localhost:8787"
+  ],
+  "scopes_supported": [
+    "mcp:read"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "resource_name": "iWind AIFin MCP"
+}

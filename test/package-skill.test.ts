@@ -116,6 +116,25 @@ describe("deterministic Skill packaging", () => {
     }
   });
 
+  it("binds the rotated-success notice to the actual runtime Skill package without platform branches", async () => {
+    expect(runPackage()).toMatchObject({ status: 0, stderr: "" });
+    const archive = unzipSync(await readFile(PACKAGE_OUTPUT));
+    const skill = decodeArchiveEntry(archive, `${FIXED_ROOT}/SKILL.md`);
+    const noticeCases = JSON.parse(
+      decodeArchiveEntry(archive, `${FIXED_ROOT}/evals/notice-cases.json`),
+    ) as Array<{
+      id: string;
+      notice: { code: string } | null;
+      operationsSentence: string | null;
+    }>;
+    const rotated = noticeCases.find(({ notice }) => notice?.code === "WIND_KEY_ROTATED");
+
+    expect(rotated?.id).toBe("rotated-success");
+    expect(rotated?.operationsSentence).toMatch(/自动轮换/);
+    expect(skill).toContain(rotated?.operationsSentence);
+    expect(skill).not.toMatch(/ChatGPT|Grok|Claude|Gemini/iu);
+  });
+
   it.each([
     ["hidden file", async (source: string) => writeFile(path.join(source, ".unexpected"), "x")],
     ["unexpected file", async (source: string) => writeFile(path.join(source, "notes.md"), "x")],
@@ -176,3 +195,12 @@ describe("deterministic Skill packaging", () => {
     expect((await readdir(path.dirname(PACKAGE_OUTPUT))).filter((name) => name.includes(".tmp-"))).toEqual([]);
   });
 });
+
+function decodeArchiveEntry(
+  archive: Readonly<Record<string, Uint8Array>>,
+  entry: string,
+): string {
+  const bytes = archive[entry];
+  if (bytes === undefined) throw new Error(`missing package entry: ${entry}`);
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}

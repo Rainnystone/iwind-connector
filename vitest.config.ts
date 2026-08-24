@@ -3,6 +3,18 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    coverage: {
+      provider: "istanbul",
+      include: ["gateway/src/**/*.ts"],
+      exclude: ["gateway/src/**/*.d.ts"],
+      reporter: ["text", "text-summary", "json"],
+      thresholds: {
+        statements: 90,
+        branches: 90,
+        functions: 90,
+        lines: 90,
+      },
+    },
     projects: [
       {
         test: {
@@ -14,6 +26,8 @@ export default defineConfig({
             "gateway/test/index.test.ts",
             "gateway/test/auth/oauth.test.ts",
             "gateway/test/auth/authorization-replay.test.ts",
+            "gateway/test/integration/oauth-mcp.test.ts",
+            "gateway/test/integration/rotation.test.ts",
           ],
         },
       },
@@ -31,6 +45,8 @@ export default defineConfig({
             "gateway/test/index.test.ts",
             "gateway/test/auth/oauth.test.ts",
             "gateway/test/auth/authorization-replay.test.ts",
+            "gateway/test/integration/oauth-mcp.test.ts",
+            "gateway/test/integration/rotation.test.ts",
           ],
         },
       },
