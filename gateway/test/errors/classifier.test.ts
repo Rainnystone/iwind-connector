@@ -6,6 +6,8 @@ import { classifyWindFailure, validateWindSignalRules } from "../../src/errors/c
 import type { WindFailureCategory } from "../../src/errors/types";
 
 const NOW = 1_700_000_000_000;
+const INVALID_HTTP_DATE = "Thu, 31 Apr 2026 00:00:00 GMT";
+const INVALID_HTTP_DATE_NOW = Date.UTC(2026, 4, 1) - 2000;
 const FIXTURES = new URL("../fixtures/errors/", import.meta.url);
 
 async function fixture(name: string): Promise<string> {
@@ -94,6 +96,16 @@ describe("Wind failure classifier", () => {
     expect(result.decision).toEqual({ kind: "retry_same_slot", delayMs, maxRetries: 1 });
   });
 
+  it("rejects an impossible IMF-fixdate Retry-After instead of accepting runtime normalization", () => {
+    const result = classifyWindFailure({
+      status: 429,
+      headers: { "retry-after": INVALID_HTTP_DATE },
+      now: INVALID_HTTP_DATE_NOW,
+    });
+
+    expect(result.decision).toEqual({ kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 });
+  });
+
   it("honors case-insensitive record headers and native Headers", async () => {
     const titleCasedRetryAfter = classifyWindFailure({ status: 429, headers: { "Retry-After": "2" }, now: NOW });
     const titleCasedReset = classifyWindFailure({
@@ -158,10 +170,16 @@ describe("Wind failure classifier", () => {
       headers: { "x-ratelimit-reset": "2023-11-14T22:13:22.000Z" },
       now: NOW,
     });
+    const impossibleHttpDate = classifyWindFailure({
+      body: await fixture("balance.json"),
+      headers: { "x-ratelimit-reset": INVALID_HTTP_DATE },
+      now: INVALID_HTTP_DATE_NOW,
+    });
 
     expect(future.resetAt).toBe(1_700_000_002_000);
     expect(expired.resetAt).toBeNull();
     expect(nonHttpDate.resetAt).toBeNull();
+    expect(impossibleHttpDate.resetAt).toBeNull();
   });
 
   it("does not parse an oversized envelope or infer a failure category from its text", () => {

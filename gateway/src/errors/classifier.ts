@@ -170,12 +170,12 @@ function parseRetryAfter(value: string | undefined, now: number): number | null 
     return inRetryRange(Number(value) * 1000) ? Number(value) * 1000 : null;
   }
 
-  if (!HTTP_DATE.test(value)) {
+  const parsed = parseStrictHttpDate(value);
+  if (parsed === null) {
     return null;
   }
-  const parsed = Date.parse(value);
   const delay = parsed - now;
-  return Number.isFinite(parsed) && inRetryRange(delay) ? delay : null;
+  return inRetryRange(delay) ? delay : null;
 }
 
 function parseFutureEpoch(value: unknown, now: number): number | null {
@@ -188,12 +188,17 @@ function parseFutureEpoch(value: unknown, now: number): number | null {
 }
 
 function parseFutureHttpDate(value: string | undefined, now: number): number | null {
+  const parsed = parseStrictHttpDate(value);
+  return parsed !== null && parsed > now ? parsed : null;
+}
+
+function parseStrictHttpDate(value: string | undefined): number | null {
   if (value === undefined || !HTTP_DATE.test(value)) {
     return null;
   }
 
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed > now ? parsed : null;
+  return Number.isFinite(parsed) && new Date(parsed).toUTCString() === value ? parsed : null;
 }
 
 function header(headers: WindFailureInput["headers"], name: string): string | undefined {
