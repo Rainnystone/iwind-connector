@@ -1,11 +1,13 @@
 import {
   Client,
   StreamableHTTPClientTransport,
-  type FetchLike,
 } from "@modelcontextprotocol/client";
 
 import type { UpstreamDefinition } from "../config/upstreams";
 import type { ManifestTool } from "../contracts/load-manifest";
+
+import { createAuthorizedFetch } from "./authorized-fetch";
+import { MAX_RESPONSE_BYTES, createResponseRecorder } from "./result-limit";
 
 declare global {
   type Buffer = Uint8Array;
@@ -49,15 +51,6 @@ export type McpClientAdapterFactory = (
   upstream: UpstreamDefinition,
   apiKey: string,
 ) => McpClientAdapter;
-
-export function createAuthorizedFetch(apiKey: string, baseFetch: FetchLike = fetch): FetchLike {
-  return async (input, init) => {
-    const headers = new Headers(input instanceof Request ? input.headers : undefined);
-    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
-    headers.set("Authorization", `Bearer ${apiKey}`);
-    return baseFetch(input, { ...init, headers });
-  };
-}
 
 export function createWindSessionFactory(
   createAdapter: McpClientAdapterFactory = createSdkAdapter,
@@ -107,7 +100,11 @@ function createSdkAdapter(upstream: UpstreamDefinition, apiKey: string): McpClie
     { versionNegotiation: { mode: "auto" } },
   );
   const transport = new StreamableHTTPClientTransport(upstream.url, {
-    fetch: createAuthorizedFetch(apiKey),
+    fetch: createAuthorizedFetch({
+      apiKey,
+      maxResponseBytes: MAX_RESPONSE_BYTES,
+      recorder: createResponseRecorder(),
+    }),
   });
   const declaredWritableToolNames: string[] = [];
 

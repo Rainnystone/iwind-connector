@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { getUpstream } from "../../src/config/upstreams";
+import { createAuthorizedFetch } from "../../src/upstream/authorized-fetch";
+import { createResponseRecorder } from "../../src/upstream/result-limit";
 import {
-  createAuthorizedFetch,
   createWindSessionFactory,
   withWindSession,
   type McpClientAdapter,
@@ -19,7 +20,12 @@ describe("Wind MCP session", () => {
     });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const authorizedFetch = createAuthorizedFetch(SECRET_SENTINEL, baseFetch);
+    const authorizedFetch = createAuthorizedFetch({
+      apiKey: SECRET_SENTINEL,
+      baseFetch,
+      maxResponseBytes: 8_388_608,
+      recorder: createResponseRecorder(),
+    });
 
     await authorizedFetch("https://example.test/mcp", {
       headers: [

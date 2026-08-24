@@ -8,7 +8,11 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["gateway/test/**/*.test.ts"],
-          exclude: ["gateway/test/key-pool/**/*.test.ts", "gateway/test/index.test.ts"],
+          exclude: [
+            "gateway/test/key-pool/**/*.test.ts",
+            "gateway/test/invocation/**/*.test.ts",
+            "gateway/test/index.test.ts",
+          ],
         },
       },
       {
@@ -19,7 +23,11 @@ export default defineConfig({
         ],
         test: {
           name: "workers",
-          include: ["gateway/test/key-pool/**/*.test.ts", "gateway/test/index.test.ts"],
+          include: [
+            "gateway/test/key-pool/**/*.test.ts",
+            "gateway/test/invocation/**/*.test.ts",
+            "gateway/test/index.test.ts",
+          ],
         },
       },
     ],
