@@ -1,4 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { getMcpAuthContext } from "agents/mcp/server";
 import { describe, expect, it } from "vitest";
 
 import worker from "../src/index";
@@ -22,6 +23,7 @@ describe("gateway worker", () => {
     const invalidContexts = [
       {},
       { userId: "user", emailHash: "hash", scopes: [] },
+      { userId: "user", emailHash: "hash", scopes: ["mcp:write"] },
       { userId: "user", emailHash: "hash", scopes: ["mcp:read", "extra"] },
     ];
     for (const props of invalidContexts) {
@@ -43,7 +45,12 @@ describe("gateway worker", () => {
       ),
     ).resolves.toMatchObject({ status: 404 });
 
-    const identities = { nextServer: 0, servers: [] as number[], requestIds: [] as string[] };
+    const identities = {
+      nextServer: 0,
+      servers: [] as number[],
+      requestIds: [] as string[],
+      observedProps: [] as Array<Record<string, unknown>>,
+    };
     const first = await listAndCallOverHttp(exactProps("one"), identities);
     const second = await listAndCallOverHttp(exactProps("two"), identities);
     expect(first).toBe(31);
@@ -52,6 +59,10 @@ describe("gateway worker", () => {
     expect(new Set(identities.servers).size).toBe(identities.servers.length);
     expect(identities.requestIds).toHaveLength(2);
     expect(identities.requestIds[0]).not.toBe(identities.requestIds[1]);
+    expect(identities.observedProps).toEqual([
+      { userId: "one", emailHash: "hash-one", scopes: ["mcp:read"] },
+      { userId: "two", emailHash: "hash-two", scopes: ["mcp:read"] },
+    ]);
   });
 });
 
@@ -65,7 +76,12 @@ function context(props: object) {
 
 async function listAndCallOverHttp(
   props: ReturnType<typeof exactProps>,
-  identities: { nextServer: number; servers: number[]; requestIds: string[] },
+  identities: {
+    nextServer: number;
+    servers: number[];
+    requestIds: string[];
+    observedProps: Array<Record<string, unknown>>;
+  },
 ): Promise<number> {
   const handler = createMcpRequestHandler({
     env: {} as never,
@@ -78,6 +94,13 @@ async function listAndCallOverHttp(
         waitUntil: () => undefined,
         invoke: async (request) => {
           identities.requestIds.push(request.requestId);
+          const authContext = getMcpAuthContext();
+          if (authContext === undefined) throw new Error("missing MCP auth context");
+          identities.observedProps.push({
+            userId: requireString(authContext.props, "userId"),
+            emailHash: requireString(authContext.props, "emailHash"),
+            scopes: requireReadScopes(authContext.props),
+          });
           return { toolResult: { content: [{ type: "text", text: "ok" }] }, notice: null };
         },
       });
@@ -92,4 +115,17 @@ async function listAndCallOverHttp(
   await client.callTool({ name: "get_stock_quote", arguments: { windcode: "600519.SH" } });
   await client.close();
   return result.tools.length;
+}
+
+function requireString(value: Record<string, unknown>, key: string): string {
+  const field = value[key];
+  if (typeof field !== "string") throw new Error(`missing auth prop: ${key}`);
+  return field;
+}
+
+function requireReadScopes(value: Record<string, unknown>): string[] {
+  if (!Array.isArray(value.scopes) || value.scopes.some((scope) => typeof scope !== "string")) {
+    throw new Error("invalid auth scopes");
+  }
+  return [...value.scopes];
 }
