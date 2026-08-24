@@ -52,4 +52,27 @@ describe("Wind operations notice encoder", () => {
       }),
     ).toThrow("invalid ops notice");
   });
+
+  it("rejects a failed rotated notice", () => {
+    expect(() =>
+      encodeOpsNotice({
+        ...rotated,
+        finalStatus: "failed",
+      }),
+    ).toThrow("invalid ops notice");
+  });
+
+  it.each([
+    "WIND_KEY_ROTATION_FAILED",
+    "KEY_POOL_EXHAUSTED",
+    "GATEWAY_BUSY",
+    "WIND_REQUEST_FAILED",
+  ])("rejects succeeded status for failure notice %s", (code) => {
+    expect(() =>
+      encodeOpsNotice({
+        ...rotated,
+        code,
+      }),
+    ).toThrow("invalid ops notice");
+  });
 });

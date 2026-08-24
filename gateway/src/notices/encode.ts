@@ -10,6 +10,13 @@ const NOTICE_CODES = new Set<OpsNoticeV1["code"]>([
   "WIND_REQUEST_FAILED",
 ]);
 
+const FAILURE_NOTICE_CODES = new Set<Exclude<OpsNoticeV1["code"], "WIND_KEY_ROTATED">>([
+  "WIND_KEY_ROTATION_FAILED",
+  "KEY_POOL_EXHAUSTED",
+  "GATEWAY_BUSY",
+  "WIND_REQUEST_FAILED",
+]);
+
 const FAILURE_CATEGORIES = new Set<WindFailureCategory>([
   "daily_quota",
   "balance",
@@ -48,7 +55,10 @@ function isOpsNoticeV1(value: unknown): value is OpsNoticeV1 {
   if (typeof value.code !== "string" || !NOTICE_CODES.has(value.code as OpsNoticeV1["code"])) {
     return false;
   }
-  if (value.finalStatus !== "succeeded" && value.finalStatus !== "failed") {
+  if (value.code === "WIND_KEY_ROTATED" && value.finalStatus !== "succeeded") {
+    return false;
+  }
+  if (value.code !== "WIND_KEY_ROTATED" && (!FAILURE_NOTICE_CODES.has(value.code as Exclude<OpsNoticeV1["code"], "WIND_KEY_ROTATED">) || value.finalStatus !== "failed")) {
     return false;
   }
   return value.initialCategory === null || (typeof value.initialCategory === "string" && FAILURE_CATEGORIES.has(value.initialCategory as WindFailureCategory));

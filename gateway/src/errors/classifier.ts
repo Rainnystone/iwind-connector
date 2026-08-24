@@ -8,6 +8,7 @@ import type {
 } from "./types";
 
 const MAX_ERROR_ENVELOPE_BYTES = 16 * 1024;
+const HTTP_DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 const STOP: RetryDecision = { kind: "stop" };
 const RETRY_ONCE_500: RetryDecision = { kind: "retry_same_slot", delayMs: 500, maxRetries: 1 };
 const RETRY_ONCE_3000: RetryDecision = { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 };
@@ -142,7 +143,7 @@ function readBoundedEnvelope(body: WindFailureInput["body"]):
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
   } catch {
     return { kind: "malformed" };
   }
@@ -165,10 +166,13 @@ function parseRetryAfter(value: string | undefined, now: number): number | null 
     return null;
   }
 
-  if (/^\d+(?:\.\d+)?$/.test(value)) {
+  if (/^\d+$/.test(value)) {
     return inRetryRange(Number(value) * 1000) ? Number(value) * 1000 : null;
   }
 
+  if (!HTTP_DATE.test(value)) {
+    return null;
+  }
   const parsed = Date.parse(value);
   const delay = parsed - now;
   return Number.isFinite(parsed) && inRetryRange(delay) ? delay : null;
@@ -184,7 +188,7 @@ function parseFutureEpoch(value: unknown, now: number): number | null {
 }
 
 function parseFutureHttpDate(value: string | undefined, now: number): number | null {
-  if (value === undefined || !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value)) {
+  if (value === undefined || !HTTP_DATE.test(value)) {
     return null;
   }
 
@@ -200,7 +204,8 @@ function header(headers: WindFailureInput["headers"], name: string): string | un
     return headers.get(name) ?? undefined;
   }
 
-  return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+  const normalizedName = name.toLowerCase();
+  return Object.entries(headers).find(([candidate]) => candidate.toLowerCase() === normalizedName)?.[1];
 }
 
 function failure(category: WindFailureCategory, stableCode: string, decision: RetryDecision, resetAt: number | null = null): ClassifiedFailure {

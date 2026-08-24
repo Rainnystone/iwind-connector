@@ -12,6 +12,14 @@ async function fixture(name: string): Promise<string> {
   return readFile(new URL(name, FIXTURES), "utf8");
 }
 
+async function byteFixture(name: string): Promise<Uint8Array> {
+  const value: unknown = JSON.parse(await fixture(name));
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { bytes?: unknown }).bytes)) {
+    throw new Error("invalid byte fixture");
+  }
+  return new Uint8Array((value as { bytes: number[] }).bytes);
+}
+
 describe("Wind failure classifier", () => {
   it.each([
     ["daily-limit.json", "daily_quota", "failover_slot", "exhausted_until_reset"],
@@ -55,6 +63,13 @@ describe("Wind failure classifier", () => {
     expect(unexpectedShape.decision).toEqual({ kind: "stop" });
   });
 
+  it("fails closed when a bounded byte envelope contains invalid UTF-8", async () => {
+    const result = classifyWindFailure({ body: await byteFixture("invalid-utf8.json"), now: NOW });
+
+    expect(result.category).toBe("unknown");
+    expect(result.decision).toEqual({ kind: "stop" });
+  });
+
   it.each([
     [429, "qps", { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 }],
     [401, "unknown", { kind: "stop" }],
@@ -70,11 +85,31 @@ describe("Wind failure classifier", () => {
     ["2", 2000],
     ["Tue, 14 Nov 2023 22:13:22 GMT", 2000],
     ["6", 3000],
+    ["2.5", 3000],
+    ["2023-11-14T22:13:22.000Z", 3000],
     ["invalid", 3000],
   ] as const)("uses bounded Retry-After value %s", (retryAfter, delayMs) => {
     const result = classifyWindFailure({ status: 429, headers: { "retry-after": retryAfter }, now: NOW });
 
     expect(result.decision).toEqual({ kind: "retry_same_slot", delayMs, maxRetries: 1 });
+  });
+
+  it("honors case-insensitive record headers and native Headers", async () => {
+    const titleCasedRetryAfter = classifyWindFailure({ status: 429, headers: { "Retry-After": "2" }, now: NOW });
+    const titleCasedReset = classifyWindFailure({
+      body: await fixture("balance.json"),
+      headers: { "X-RateLimit-Reset": "Tue, 14 Nov 2023 22:13:22 GMT" },
+      now: NOW,
+    });
+    const nativeHeaders = classifyWindFailure({
+      status: 429,
+      headers: new Headers({ "Retry-After": "2" }),
+      now: NOW,
+    });
+
+    expect(titleCasedRetryAfter.decision).toEqual({ kind: "retry_same_slot", delayMs: 2000, maxRetries: 1 });
+    expect(titleCasedReset.resetAt).toBe(1_700_000_002_000);
+    expect(nativeHeaders.decision).toEqual({ kind: "retry_same_slot", delayMs: 2000, maxRetries: 1 });
   });
 
   it("uses fixed retry delays for concurrency, network, timeout, and upstream 5xx", async () => {
