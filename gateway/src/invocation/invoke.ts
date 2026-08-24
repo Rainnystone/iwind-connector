@@ -51,6 +51,21 @@ export async function invokeWindTool(
       onResponseBytes: (bytes) => {
         lastResponseBytes = bytes;
       },
+      onCloseError: () => {
+        safeLog(
+          log,
+          logEvent(
+            request,
+            route.domain,
+            heldLease?.slotId ?? null,
+            "MCP_CLOSE_FAILED",
+            startedAt,
+            now(),
+            lastResponseBytes,
+            null,
+          ),
+        );
+      },
     });
   const attemptedSlots = new Set<SlotId>();
 
@@ -71,7 +86,8 @@ export async function invokeWindTool(
       });
       return true;
     } catch {
-      safeLog(
+      registerRepairLog(
+        dependencies.waitUntil,
         log,
         logEvent(
           request,
@@ -477,6 +493,19 @@ function safeLog(log: (event: GatewayLogEvent) => void, event: GatewayLogEvent):
     log(event);
   } catch {
     // Observability must not change lease or request semantics.
+  }
+}
+
+function registerRepairLog(
+  waitUntil: InvocationDependencies["waitUntil"],
+  log: (event: GatewayLogEvent) => void,
+  event: GatewayLogEvent,
+): void {
+  const repairLog = Promise.resolve().then(() => safeLog(log, event));
+  try {
+    waitUntil(repairLog);
+  } catch {
+    // The already-created redacted repair log still runs if registration fails.
   }
 }
 

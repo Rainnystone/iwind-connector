@@ -17,5 +17,15 @@ export function emitLogEvent(
   event: GatewayLogEvent,
   sink: (serialized: string) => void = console.log,
 ): void {
-  sink(JSON.stringify(event));
+  const allowlistedEvent: GatewayLogEvent = {
+    requestId: event.requestId,
+    domain: event.domain,
+    toolName: event.toolName,
+    slotId: event.slotId,
+    status: event.status,
+    durationMs: event.durationMs,
+    responseBytes: event.responseBytes,
+    noticeCode: event.noticeCode,
+  };
+  sink(JSON.stringify(allowlistedEvent));
 }

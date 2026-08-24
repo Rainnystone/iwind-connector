@@ -4,12 +4,18 @@ import { reset } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { invokeWindTool } from "../../src/invocation/invoke";
+import {
+  WIND_SECRET_SLOT_CONTRACT,
+  resolveWindSecret,
+} from "../../src/invocation/resolve-secret";
 import type {
   InvocationKeyPool,
   InvocationRequest,
   WindToolCaller,
 } from "../../src/invocation/types";
-import { WindCallFailure } from "../../src/upstream/call-tool";
+import { createWindToolCaller, WindCallFailure } from "../../src/upstream/call-tool";
+import { MAX_ERROR_ENVELOPE_BYTES } from "../../src/upstream/result-limit";
+import { emitLogEvent } from "../../src/logging/event";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../../src/key-pool/types";
 
 const NOW = 1_700_000_000_000;
@@ -33,6 +39,17 @@ afterEach(async () => {
 });
 
 describe("Wind invocation state machine", () => {
+  it("keeps secret resolution exhaustive over the compile-time SlotId contract", () => {
+    const invocationEnv = dependencies(scriptedPool([]), scriptedCaller([])).env;
+
+    expect(Object.keys(WIND_SECRET_SLOT_CONTRACT).sort()).toEqual(["key-01", "key-02"]);
+    expect(resolveWindSecret(invocationEnv, "key-01")).toBe(SECRET_01);
+    expect(resolveWindSecret(invocationEnv, "key-02")).toBe(SECRET_02);
+    expect(() =>
+      Reflect.apply(resolveWindSecret, undefined, [invocationEnv, "future-slot"]),
+    ).toThrow("WIND_SECRET_SLOT_UNKNOWN");
+  });
+
   it("preserves the successful CallToolResult by reference and keeps key-01 active", async () => {
     const pool = scriptedPool([lease("key-01", "lease-01")]);
     const caller = scriptedCaller([SUCCESS]);
@@ -192,6 +209,30 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports.map((entry) => entry.category)).toEqual([category]);
   });
 
+  it("does not rotate when a structured auth envelope exceeds 16 KiB by one byte", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const body = `${exactSizedAuthEnvelope()} `;
+    const caller = createWindToolCaller({
+      baseFetch: async () =>
+        new Response(body, {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "response_too_large",
+    });
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["response_too_large"]);
+  });
+
   it.each(["GATEWAY_BUSY", "KEY_POOL_EXHAUSTED"] as const)(
     "returns stable %s without calling Wind",
     async (code) => {
@@ -292,14 +333,16 @@ describe("Wind invocation state machine", () => {
     ]);
   });
 
-  it("does not return business success when lease reporting fails and emits a repair event", async () => {
+  it("registers a real allowlisted repair-log promise when lease reporting fails", async () => {
     const pool = scriptedPool([lease("key-01", "lease-01")], 1);
     const caller = scriptedCaller([SUCCESS]);
-    const events: unknown[] = [];
+    const lines: string[] = [];
+    const registered: Promise<void>[] = [];
 
     const result = await invokeWindTool(REQUEST, {
       ...dependencies(pool, caller),
-      log: (event) => events.push(event),
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
+      waitUntil: (promise) => registered.push(promise),
     });
 
     expect(result.toolResult.isError).toBe(true);
@@ -307,10 +350,49 @@ describe("Wind invocation state machine", () => {
       code: "WIND_REQUEST_FAILED",
       initialCategory: "unknown",
     });
-    expect(JSON.stringify(events)).toContain("lease_repair_required");
-    expect(JSON.stringify(events)).not.toContain(SECRET_01);
-    expect(JSON.stringify(events)).not.toContain("argument-must-not-be-logged");
-    expect(JSON.stringify(events)).not.toContain("fixture-result");
+    expect(registered).toHaveLength(1);
+    await Promise.all(registered);
+    const repairEvent = lines
+      .map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>)
+      .find((event) => event.status === "lease_repair_required");
+    expect(repairEvent).toBeDefined();
+    expect(Object.keys(repairEvent ?? {}).sort()).toEqual([
+      "domain",
+      "durationMs",
+      "noticeCode",
+      "requestId",
+      "responseBytes",
+      "slotId",
+      "status",
+      "toolName",
+    ]);
+    expect(lines.join("\n")).not.toContain(SECRET_01);
+    expect(lines.join("\n")).not.toContain("argument-must-not-be-logged");
+    expect(lines.join("\n")).not.toContain("fixture-result");
+    expect(pool.reports).toHaveLength(1);
+  });
+
+  it("keeps lease and business semantics when repair waitUntil and logging throw", async () => {
+    const pool = scriptedPool([lease("key-01", "lease-01")], 1);
+    const waitUntil = vi.fn((promise: Promise<void>) => {
+      void promise;
+      throw new Error("synthetic waitUntil failure");
+    });
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, scriptedCaller([SUCCESS])),
+      waitUntil,
+      log: () => {
+        throw new Error("synthetic logger failure");
+      },
+    });
+
+    expect(result.toolResult.isError).toBe(true);
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "unknown",
+    });
+    expect(waitUntil).toHaveBeenCalledOnce();
     expect(pool.reports).toHaveLength(1);
   });
 
@@ -350,8 +432,14 @@ describe("Wind invocation state machine", () => {
     };
 
     const results = await Promise.all([
-      invokeWindTool({ ...REQUEST, requestId: "concurrent-01" }, { env: realEnv, caller }),
-      invokeWindTool({ ...REQUEST, requestId: "concurrent-02" }, { env: realEnv, caller }),
+      invokeWindTool(
+        { ...REQUEST, requestId: "concurrent-01" },
+        { env: realEnv, caller, waitUntil: consumeBackgroundPromise },
+      ),
+      invokeWindTool(
+        { ...REQUEST, requestId: "concurrent-02" },
+        { env: realEnv, caller, waitUntil: consumeBackgroundPromise },
+      ),
     ]);
 
     expect(results.every((result) => result.toolResult === SUCCESS)).toBe(true);
@@ -359,19 +447,24 @@ describe("Wind invocation state machine", () => {
   });
 });
 
-function dependencies(pool: ScriptedPool, caller: ScriptedCaller) {
+function dependencies(pool: ScriptedPool, caller: WindToolCaller) {
   return {
     env: {
       KEY_POOL: env.KEY_POOL,
       WIND_API_KEY_01: SECRET_01,
       WIND_API_KEY_02: SECRET_02,
     },
+    waitUntil: consumeBackgroundPromise,
     keyPool: pool satisfies InvocationKeyPool,
     caller: caller satisfies WindToolCaller,
     now: () => NOW,
     sleep: async () => undefined,
     log: () => undefined,
   };
+}
+
+function consumeBackgroundPromise(promise: Promise<void>): void {
+  void promise.catch(() => undefined);
 }
 
 interface ScriptedPool extends InvocationKeyPool {
@@ -444,4 +537,10 @@ function timeoutFailure(): WindCallFailure {
   const error = new Error("synthetic timeout");
   error.name = "AbortError";
   return new WindCallFailure({ error });
+}
+
+function exactSizedAuthEnvelope(): string {
+  const prefix = '{"error":{"code":"AUTH_ERROR"},"padding":"';
+  const suffix = '"}';
+  return `${prefix}${"x".repeat(MAX_ERROR_ENVELOPE_BYTES - prefix.length - suffix.length)}${suffix}`;
 }

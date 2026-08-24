@@ -47,6 +47,7 @@ export interface WindToolCallerOptions {
   readonly createAttempt?: McpToolAttemptFactory;
   readonly baseFetch?: FetchLike;
   readonly onResponseBytes?: (bytes: number) => void;
+  readonly onCloseError?: () => void;
 }
 
 export class WindCallFailure extends Error {
@@ -86,10 +87,22 @@ export function createWindToolCaller(options: WindToolCallerOptions = {}): WindT
         safeRecordResponseBytes(options.onResponseBytes, record.responseBytes);
         throw toWindCallFailure(error, record);
       } finally {
-        await attempt.close();
+        try {
+          await attempt.close();
+        } catch {
+          safeObserveCloseError(options.onCloseError);
+        }
       }
     },
   };
+}
+
+function safeObserveCloseError(observer: WindToolCallerOptions["onCloseError"]): void {
+  try {
+    observer?.();
+  } catch {
+    // Cleanup observations must not change the primary Wind request outcome.
+  }
 }
 
 function createSdkAttempt(input: McpToolAttemptFactoryInput): McpToolAttempt {
@@ -123,6 +136,9 @@ function boundedOptions(timeoutMs: number, signal: AbortSignal): BoundedRequestO
 }
 
 function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFailure {
+  if (record.errorEnvelopeTruncated) {
+    return new WindCallFailure({}, record.responseBytes, "response_too_large");
+  }
   if (error instanceof WindCallFailure) return error;
   if (error instanceof ResponseTooLargeError || record.responseTooLarge) {
     return new WindCallFailure({}, record.responseBytes, "response_too_large");

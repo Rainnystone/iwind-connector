@@ -126,6 +126,54 @@ describe("bounded Wind response streams", () => {
     });
     expect(recorder.snapshot().errorBody?.byteLength).toBe(MAX_ERROR_ENVELOPE_BYTES);
   });
+
+  it("accepts an exact 16 KiB structured error envelope without marking it truncated", async () => {
+    const body = exactSizedAuthEnvelope();
+    const recorder = createResponseRecorder();
+
+    const limited = limitResponseBody(
+      new Response(streamOf(new TextEncoder().encode(body)), { status: 401 }),
+      MAX_BYTES,
+      recorder,
+    );
+
+    await expect(limited.text()).resolves.toBe(body);
+    expect(recorder.snapshot()).toMatchObject({
+      errorEnvelopeTruncated: false,
+      responseBytes: MAX_ERROR_ENVELOPE_BYTES,
+    });
+  });
+
+  it("forces a 16 KiB plus one structured error envelope to response_too_large", async () => {
+    const body = `${exactSizedAuthEnvelope()} `;
+    const caller = createWindToolCaller({
+      baseFetch: async () =>
+        new Response(streamOf(new TextEncoder().encode(body)), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    const failure = await caller
+      .call({
+        upstream: getUpstream("stock_data"),
+        toolName: "get_stock_quote",
+        arguments: {},
+        apiKey: SECRET,
+        timeoutMs: 600_000,
+        maxResponseBytes: MAX_BYTES,
+      })
+      .then(
+        () => {
+          throw new Error("expected bounded error-envelope failure");
+        },
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(WindCallFailure);
+    if (!(failure instanceof WindCallFailure)) throw new Error("unexpected failure shape");
+    expect(failure.forcedCategory).toBe("response_too_large");
+  });
 });
 
 describe("authorized bounded fetch", () => {
@@ -265,6 +313,55 @@ describe("MCP v2 call lifecycle", () => {
     expect(classifyWindFailure(failure.classificationInput).category).toBe("timeout");
   });
 
+  it("preserves success when close rejects and observes the close failure without its value", async () => {
+    const onCloseError = vi.fn<() => void>();
+    const caller = createWindToolCaller({
+      createAttempt: () => fakeAttempt({ closeError: new Error("close-secret") }),
+      onCloseError,
+    });
+
+    const result = await caller.call(toolCallInput());
+
+    expect(result).toBe(RESULT);
+    expect(onCloseError).toHaveBeenCalledOnce();
+    expect(onCloseError.mock.calls[0]).toHaveLength(0);
+  });
+
+  it.each([
+    ["network", new TypeError("primary network"), "network"],
+    ["timeout", namedError("AbortError"), "timeout"],
+    [
+      "response-too-large",
+      new ResponseTooLargeError(MAX_BYTES, MAX_BYTES + 1),
+      "response_too_large",
+    ],
+  ] as const)(
+    "preserves a primary %s failure when close also rejects",
+    async (_name, primaryError, category) => {
+      const onCloseError = vi.fn<() => void>();
+      const caller = createWindToolCaller({
+        createAttempt: () =>
+          fakeAttempt({ callError: primaryError, closeError: new Error("close-secret") }),
+        onCloseError,
+      });
+
+      const failure = await caller.call(toolCallInput()).then(
+        () => {
+          throw new Error("expected primary failure");
+        },
+        (error: unknown) => error,
+      );
+
+      expect(failure).toBeInstanceOf(WindCallFailure);
+      if (!(failure instanceof WindCallFailure)) throw new Error("unexpected failure shape");
+      const actualCategory =
+        failure.forcedCategory ?? classifyWindFailure(failure.classificationInput).category;
+      expect(actualCategory).toBe(category);
+      expect(onCloseError).toHaveBeenCalledOnce();
+      expect(onCloseError.mock.calls[0]).toHaveLength(0);
+    },
+  );
+
   it("lets MCP v2 auto negotiation consume a legacy 404 probe and complete the tool call", async () => {
     const methods: string[] = [];
     const responseBytes: number[] = [];
@@ -359,7 +456,9 @@ interface FakeAttempt extends McpToolAttempt {
   closeCount: number;
 }
 
-function fakeAttempt(options: { connectError?: Error; callError?: Error } = {}): FakeAttempt {
+function fakeAttempt(
+  options: { connectError?: Error; callError?: Error; closeError?: Error } = {},
+): FakeAttempt {
   return {
     closeCount: 0,
     async connect(requestOptions) {
@@ -373,8 +472,26 @@ function fakeAttempt(options: { connectError?: Error; callError?: Error } = {}):
     },
     async close() {
       this.closeCount += 1;
+      if (options.closeError) throw options.closeError;
     },
   };
+}
+
+function toolCallInput() {
+  return {
+    upstream: getUpstream("stock_data"),
+    toolName: "get_stock_quote",
+    arguments: {},
+    apiKey: SECRET,
+    timeoutMs: 600_000 as const,
+    maxResponseBytes: MAX_BYTES as 8_388_608,
+  };
+}
+
+function namedError(name: string): Error {
+  const error = new Error(`synthetic ${name}`);
+  error.name = name;
+  return error;
 }
 
 function streamOf(chunk: Uint8Array): ReadableStream<Uint8Array> {
@@ -384,6 +501,17 @@ function streamOf(chunk: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function exactSizedAuthEnvelope(): string {
+  const prefix = '{"error":{"code":"AUTH_ERROR"},"padding":"';
+  const suffix = '"}';
+  const paddingBytes = MAX_ERROR_ENVELOPE_BYTES - prefix.length - suffix.length;
+  const body = `${prefix}${"x".repeat(paddingBytes)}${suffix}`;
+  if (new TextEncoder().encode(body).byteLength !== MAX_ERROR_ENVELOPE_BYTES) {
+    throw new Error("invalid exact error-envelope fixture");
+  }
+  return body;
 }
 
 function jsonRpc(id: unknown, result: unknown): Response {

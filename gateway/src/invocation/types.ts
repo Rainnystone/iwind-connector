@@ -40,6 +40,7 @@ export interface InvocationEnvironment {
 
 export interface InvocationDependencies {
   readonly env: InvocationEnvironment;
+  readonly waitUntil: (promise: Promise<void>) => void;
   readonly keyPool?: InvocationKeyPool;
   readonly caller?: WindToolCaller;
   readonly now?: () => number;
