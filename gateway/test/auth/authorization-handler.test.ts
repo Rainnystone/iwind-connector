@@ -221,7 +221,7 @@ async function reachConsent(fixture: ReturnType<typeof authFixture>) {
 }
 
 function authFixture() {
-  const storage = new Map<string, string>();
+  const markers = new Set<string>();
   const completeAuthorization = vi.fn(async () => ({
     redirectTo: "https://client.example.test/approved",
   }));
@@ -244,15 +244,18 @@ function authFixture() {
         lookupClient: async () => CLIENT,
         completeAuthorization,
       },
-      OAUTH_KV: {
-        async put(key: string, value: string) {
-          storage.set(key, value);
-        },
-        async get(key: string) {
-          return storage.get(key) ?? null;
-        },
-        async delete(key: string) {
-          storage.delete(key);
+      KEY_POOL: {
+        getByName() {
+          return {
+            async setOAuthReplayMarker(input: { markerId: string }) {
+              markers.add(input.markerId);
+            },
+            async consumeOAuthReplayMarker(input: { markerId: string }) {
+              if (!markers.has(input.markerId)) return false;
+              markers.delete(input.markerId);
+              return true;
+            },
+          };
         },
       },
     } as never,

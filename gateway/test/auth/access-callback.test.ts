@@ -83,6 +83,59 @@ describe("Cloudflare Access OIDC callback", () => {
       }),
     ).rejects.toThrow("ACCESS_IDENTITY_REJECTED");
   });
+
+  it.each(["exp", "iat"] as const)("rejects a signed token missing %s", async (claim) => {
+    const fixture = await oidcFixture({}, claim);
+    await expect(
+      exchangeAndVerifyAccessCode(accessInput(), {
+        now: () => NOW,
+        fetch: async (input) =>
+          String(input).endsWith("/jwks")
+            ? Response.json(fixture.jwks)
+            : Response.json({ id_token: fixture.token }),
+      }),
+    ).rejects.toThrow("ACCESS_IDENTITY_REJECTED");
+  });
+
+  it("accepts a JWKS response at 256 KiB exactly", async () => {
+    const fixture = await oidcFixture();
+    const body = padJson(fixture.jwks, 256 * 1024);
+
+    await expect(
+      exchangeAndVerifyAccessCode(accessInput(), {
+        now: () => NOW,
+        fetch: async (input) =>
+          String(input).endsWith("/jwks")
+            ? new Response(body)
+            : Response.json({ id_token: fixture.token }),
+      }),
+    ).resolves.toMatchObject({ scopes: ["mcp:read"] });
+  });
+
+  it("cancels and rejects a streamed JWKS response above 256 KiB", async () => {
+    const fixture = await oidcFixture();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(fixture.jwks)));
+        controller.enqueue(new Uint8Array(256 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(
+      exchangeAndVerifyAccessCode(accessInput(), {
+        now: () => NOW,
+        fetch: async (input) =>
+          String(input).endsWith("/jwks")
+            ? new Response(body)
+            : Response.json({ id_token: fixture.token }),
+      }),
+    ).rejects.toThrow("ACCESS_IDENTITY_REJECTED");
+    expect(cancelled).toBe(true);
+  });
 });
 
 function accessInput() {
@@ -102,21 +155,30 @@ function accessInput() {
 
 async function oidcFixture(
   overrides: Partial<{ issuer: string; audience: string; nonce: string; email: string }> = {},
+  omittedClaim?: "exp" | "iat",
 ) {
   const { privateKey, publicKey } = await generateKeyPair("RS256", { extractable: true });
   const jwk = await exportJWK(publicKey);
   const issuer = overrides.issuer ?? ISSUER;
   const audience = overrides.audience ?? AUDIENCE;
-  const token = await new SignJWT({
+  let tokenBuilder = new SignJWT({
     nonce: overrides.nonce ?? "expected-nonce",
     email: overrides.email ?? EMAIL,
   })
     .setProtectedHeader({ alg: "RS256", kid: "test-key" })
     .setSubject("access-subject")
     .setIssuer(issuer)
-    .setAudience(audience)
-    .setIssuedAt(Math.floor(NOW / 1000))
-    .setExpirationTime(Math.floor(NOW / 1000) + 300)
-    .sign(privateKey);
+    .setAudience(audience);
+  if (omittedClaim !== "iat") tokenBuilder = tokenBuilder.setIssuedAt(Math.floor(NOW / 1000));
+  if (omittedClaim !== "exp") {
+    tokenBuilder = tokenBuilder.setExpirationTime(Math.floor(NOW / 1000) + 300);
+  }
+  const token = await tokenBuilder.sign(privateKey);
   return { token, jwks: { keys: [{ ...jwk, kid: "test-key", alg: "RS256", use: "sig" }] } };
+}
+
+function padJson(value: unknown, size: number): string {
+  const json = JSON.stringify(value);
+  if (json.length > size) throw new Error("fixture too large");
+  return `${json}${" ".repeat(size - json.length)}`;
 }

@@ -58,3 +58,11 @@ export interface PendingTestOutcome {
   readonly slotId: SlotId;
   readonly category: WindFailureCategory;
 }
+
+export type OAuthReplayMarkerKind = "access" | "consent";
+
+export interface OAuthReplayMarkerInput {
+  readonly markerId: string;
+  readonly kind: OAuthReplayMarkerKind;
+  readonly now: number;
+}

@@ -7,6 +7,7 @@ import type {
   KeyPoolLeaseStatus,
   KeyPoolSlotStatus,
   KeyPoolStatus,
+  OAuthReplayMarkerInput,
   PendingTestOutcome,
   ReportOutcomeInput,
   SlotId,
@@ -14,6 +15,7 @@ import type {
 } from "./types";
 
 export const LEASE_TTL_MS = 1_230_000;
+export const OAUTH_REPLAY_TTL_MS = 600_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -207,6 +209,43 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     return Promise.resolve(category);
   }
 
+  setOAuthReplayMarker(input: OAuthReplayMarkerInput): Promise<void> {
+    assertOAuthReplayMarkerInput(input);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM oauth_replay_marker WHERE expires_at <= ?", input.now);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO oauth_replay_marker (marker_id, kind, expires_at) VALUES (?, ?, ?)",
+        input.markerId,
+        input.kind,
+        input.now + OAUTH_REPLAY_TTL_MS,
+      );
+    });
+    return Promise.resolve();
+  }
+
+  consumeOAuthReplayMarker(input: OAuthReplayMarkerInput): Promise<boolean> {
+    assertOAuthReplayMarkerInput(input);
+    const consumed = this.ctx.storage.transactionSync((): boolean => {
+      this.ctx.storage.sql.exec("DELETE FROM oauth_replay_marker WHERE expires_at <= ?", input.now);
+      const row = this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue> & { marker_id: string }>(
+          `SELECT marker_id FROM oauth_replay_marker
+           WHERE marker_id = ? AND kind = ? AND expires_at > ?`,
+          input.markerId,
+          input.kind,
+          input.now,
+        )
+        .toArray()[0];
+      if (row === undefined) return false;
+      this.ctx.storage.sql.exec(
+        "DELETE FROM oauth_replay_marker WHERE marker_id = ?",
+        input.markerId,
+      );
+      return true;
+    });
+    return Promise.resolve(consumed);
+  }
+
   override async alarm(): Promise<void> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => this.activateDueSlots(now));
@@ -303,6 +342,14 @@ function isKnownFutureReset(value: number | null, now: number): value is number 
 
 function assertTimestamp(value: number): void {
   if (!Number.isFinite(value) || value < 0) throw new Error("INVALID_TIMESTAMP");
+}
+
+function assertOAuthReplayMarkerInput(input: OAuthReplayMarkerInput): void {
+  assertTimestamp(input.now);
+  if (!/^[a-f0-9]{64}$/u.test(input.markerId)) throw new Error("INVALID_OAUTH_REPLAY_MARKER");
+  if (input.kind !== "access" && input.kind !== "consent") {
+    throw new Error("INVALID_OAUTH_REPLAY_KIND");
+  }
 }
 
 function assertSlotId(value: string): asserts value is SlotId {

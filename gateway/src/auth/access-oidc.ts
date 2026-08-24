@@ -1,8 +1,10 @@
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 
 import type { AuthProps } from "../mcp/create-server";
+import { rebuildResponseWithBoundedBody } from "../http/bounded-body";
 
 const MAX_TOKEN_RESPONSE_BYTES = 16 * 1024;
+const MAX_JWKS_RESPONSE_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 
 export interface AccessCodeInput {
@@ -49,7 +51,11 @@ export async function exchangeAndVerifyAccessCode(
   try {
     const jwks = createRemoteJWKSet(new URL(input.jwksUrl), {
       timeoutDuration: 5_000,
-      [customFetch]: (url, options) => fetchImplementation(url, options),
+      [customFetch]: async (url, options) =>
+        rebuildResponseWithBoundedBody(
+          await fetchImplementation(url, options),
+          MAX_JWKS_RESPONSE_BYTES,
+        ),
     });
     const now = dependencies.now?.() ?? Date.now();
     const verified = await jwtVerify(body.id_token, jwks, {
@@ -57,6 +63,7 @@ export async function exchangeAndVerifyAccessCode(
       audience: input.audience,
       currentDate: new Date(now),
       algorithms: ["RS256"],
+      requiredClaims: ["exp", "iat"],
     });
     const email = normalizeEmail(verified.payload.email);
     if (
@@ -80,33 +87,8 @@ export async function exchangeAndVerifyAccessCode(
 }
 
 async function readBoundedJson(response: Response, maximum: number): Promise<unknown> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength !== null && Number(contentLength) > maximum) throw new Error("response too large");
-  if (response.body === null) throw new Error("empty response");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const result = (await reader.read()) as ReadableStreamReadResult<Uint8Array>;
-      if (result.done) break;
-      const value = result.value;
-      total += value.byteLength;
-      if (total > maximum) {
-        await reader.cancel();
-        throw new Error("response too large");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  const bounded = await rebuildResponseWithBoundedBody(response, maximum);
+  const bytes = new Uint8Array(await bounded.arrayBuffer());
   return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
 }
 

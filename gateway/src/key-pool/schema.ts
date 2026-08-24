@@ -29,6 +29,14 @@ const CREATE_PENDING_TEST_OUTCOME = `
   )
 `;
 
+const CREATE_OAUTH_REPLAY_MARKER = `
+  CREATE TABLE IF NOT EXISTS oauth_replay_marker (
+    marker_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )
+`;
+
 const SEED_SLOTS = `
   INSERT OR IGNORE INTO slots (
     slot_id,
@@ -48,5 +56,6 @@ export function initializeKeyPoolSchema(sql: SqlStorage): void {
   sql.exec(CREATE_SLOTS);
   sql.exec(CREATE_LEASE);
   sql.exec(CREATE_PENDING_TEST_OUTCOME);
+  sql.exec(CREATE_OAUTH_REPLAY_MARKER);
   sql.exec(SEED_SLOTS);
 }

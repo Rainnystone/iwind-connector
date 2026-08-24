@@ -86,6 +86,12 @@ describe("KeyPool SQLite Durable Object", () => {
         )
         .toArray()
         .map((column) => column.name),
+      oauthReplay: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { name: string }>(
+          "PRAGMA table_info(oauth_replay_marker)",
+        )
+        .toArray()
+        .map((column) => column.name),
     }));
 
     expect(columns).toEqual({
@@ -101,7 +107,57 @@ describe("KeyPool SQLite Durable Object", () => {
       ],
       lease: ["singleton", "lease_id", "request_id", "slot_id", "expires_at"],
       testOutcome: ["singleton", "slot_id", "category"],
+      oauthReplay: ["marker_id", "kind", "expires_at"],
     });
+  });
+
+  it("atomically consumes an unexpired OAuth replay marker exactly once", async () => {
+    const stub = keyPool();
+    const markerId = "a".repeat(64);
+    await stub.setOAuthReplayMarker({ markerId, kind: "access", now: BASE_TIME });
+
+    const consumed = await Promise.all([
+      stub.consumeOAuthReplayMarker({ markerId, kind: "access", now: BASE_TIME + 1 }),
+      stub.consumeOAuthReplayMarker({ markerId, kind: "access", now: BASE_TIME + 1 }),
+    ]);
+
+    expect(consumed.sort()).toEqual([false, true].sort());
+  });
+
+  it("rejects an expired or wrong-kind OAuth replay marker", async () => {
+    const stub = keyPool();
+    const markerId = "b".repeat(64);
+    await stub.setOAuthReplayMarker({ markerId, kind: "consent", now: BASE_TIME });
+
+    await expect(
+      stub.consumeOAuthReplayMarker({ markerId, kind: "access", now: BASE_TIME + 1 }),
+    ).resolves.toBe(false);
+    await expect(
+      stub.consumeOAuthReplayMarker({ markerId, kind: "consent", now: BASE_TIME + 600_000 }),
+    ).resolves.toBe(false);
+  });
+
+  it("strictly rejects malformed OAuth replay RPC inputs", async () => {
+    const stub = keyPool();
+    await expect(
+      runInDurableObject(stub, (instance) =>
+        instance.setOAuthReplayMarker({ markerId: "short", kind: "access", now: BASE_TIME }),
+      ),
+    ).rejects.toThrow("INVALID_OAUTH_REPLAY_MARKER");
+    await expect(
+      runInDurableObject(stub, (instance) =>
+        instance.setOAuthReplayMarker({
+          markerId: "c".repeat(64),
+          kind: "unexpected",
+          now: BASE_TIME,
+        } as never),
+      ),
+    ).rejects.toThrow("INVALID_OAUTH_REPLAY_KIND");
+    await expect(
+      runInDurableObject(stub, (instance) =>
+        instance.setOAuthReplayMarker({ markerId: "d".repeat(64), kind: "access", now: -1 }),
+      ),
+    ).rejects.toThrow("INVALID_TIMESTAMP");
   });
 
   it("atomically consumes one anonymous synthetic outcome exactly once", async () => {

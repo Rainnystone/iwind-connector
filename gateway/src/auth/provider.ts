@@ -65,7 +65,7 @@ const authorizationAndAdminHandler = {
       ACCESS_ISSUER: env.ACCESS_ISSUER,
       ACCESS_AUDIENCE: env.ACCESS_AUDIENCE,
       ALLOWED_USER_EMAIL: env.ALLOWED_USER_EMAIL,
-      OAUTH_KV: env.OAUTH_KV,
+      KEY_POOL: env.KEY_POOL,
       OAUTH_PROVIDER: helpers,
     };
     return handleAuthorizationRequest(request, authorizationEnv);

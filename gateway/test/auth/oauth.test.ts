@@ -11,6 +11,32 @@ import {
 } from "../../src/auth/provider";
 
 describe("OAuth-protected MCP surface", () => {
+  it.each([
+    ["/oauth/token", 64 * 1024],
+    ["/oauth/register", 1024 * 1024],
+  ] as const)("stops oversized exact POST %s before the OAuth provider", async (path, limit) => {
+    const rejected = await worker.fetch(
+      new Request(`http://localhost:8787${path}`, {
+        method: "POST",
+        body: new Uint8Array(limit + 1),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(rejected.status).toBe(413);
+    await expect(rejected.text()).resolves.toBe("Payload Too Large");
+
+    const reachedProvider = await worker.fetch(
+      new Request(`http://localhost:8787${path}`, {
+        method: "POST",
+        body: new Uint8Array(limit),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(reachedProvider.status).not.toBe(413);
+  });
+
   it("returns an RFC 9728 challenge for unauthenticated /mcp", async () => {
     const response = await SELF.fetch("http://localhost:8787/mcp");
 

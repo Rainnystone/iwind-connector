@@ -11,7 +11,6 @@ import type { AccessFlowSession, ConsentFlowSession } from "./types";
 
 const ACCESS_COOKIE = "__Host-iwind-access";
 const CONSENT_COOKIE = "__Host-iwind-consent";
-const SESSION_TTL_SECONDS = 600;
 const encoder = new TextEncoder();
 
 export interface IWindAuthorizationEnvironment {
@@ -25,7 +24,7 @@ export interface IWindAuthorizationEnvironment {
   readonly ACCESS_ISSUER: string;
   readonly ACCESS_AUDIENCE: string;
   readonly ALLOWED_USER_EMAIL: string;
-  readonly OAUTH_KV: KVNamespace;
+  readonly KEY_POOL: Cloudflare.Env["KEY_POOL"];
   readonly OAUTH_PROVIDER: Pick<
     OAuthHelpers,
     "parseAuthRequest" | "lookupClient" | "completeAuthorization"
@@ -74,8 +73,10 @@ async function startAuthorization(
   if (client === null) return localOAuthError("Unknown OAuth client");
   const state = randomToken();
   const nonce = randomToken();
-  await env.OAUTH_KV.put(await markerKey("access", state), "pending", {
-    expirationTtl: SESSION_TTL_SECONDS,
+  await env.KEY_POOL.getByName("private-key-pool").setOAuthReplayMarker({
+    markerId: await markerId(state),
+    kind: "access",
+    now,
   });
   const session: AccessFlowSession = {
     phase: "access",
@@ -124,9 +125,12 @@ async function completeAccessCallback(
     if (code === null || state === null || !(await digestEqual(state, session.state))) {
       throw new Error("invalid callback");
     }
-    const stateKey = await markerKey("access", state);
-    if ((await env.OAUTH_KV.get(stateKey)) !== "pending") throw new Error("replayed callback");
-    await env.OAUTH_KV.delete(stateKey);
+    const consumed = await env.KEY_POOL.getByName("private-key-pool").consumeOAuthReplayMarker({
+      markerId: await markerId(state),
+      kind: "access",
+      now,
+    });
+    if (!consumed) throw new Error("replayed callback");
 
     const authProps = await exchangeAndVerifyAccessCode(
       {
@@ -145,8 +149,10 @@ async function completeAccessCallback(
     );
     const csrf = randomToken();
     const marker = randomToken();
-    await env.OAUTH_KV.put(await markerKey("consent", marker), "pending", {
-      expirationTtl: SESSION_TTL_SECONDS,
+    await env.KEY_POOL.getByName("private-key-pool").setOAuthReplayMarker({
+      markerId: await markerId(marker),
+      kind: "consent",
+      now,
     });
     const consentSession: ConsentFlowSession = {
       phase: "consent",
@@ -190,8 +196,6 @@ async function completeConsent(
       now,
     );
     if (session.phase !== "consent") throw new Error("invalid phase");
-    const marker = await markerKey("consent", session.marker);
-    if ((await env.OAUTH_KV.get(marker)) !== "pending") throw new Error("replayed consent");
     const text = await readBoundedText(request, 4096);
     if (text === null) throw new Error("form too large");
     const form = new URLSearchParams(text);
@@ -207,7 +211,12 @@ async function completeConsent(
     if (!(await digestEqual(form.get("csrf") ?? "", session.csrf))) throw new Error("csrf mismatch");
     const action = form.get("action");
     if (action !== "approve" && action !== "deny") throw new Error("invalid action");
-    await env.OAUTH_KV.delete(marker);
+    const consumed = await env.KEY_POOL.getByName("private-key-pool").consumeOAuthReplayMarker({
+      markerId: await markerId(session.marker),
+      kind: "consent",
+      now,
+    });
+    if (!consumed) throw new Error("replayed consent");
     if (action === "deny") {
       return redirectWithCookies(oauthDeniedRedirect(session.oauthRequest), [
         clearSessionCookie(CONSENT_COOKIE),
@@ -358,9 +367,9 @@ function canonicalCallback(publicOrigin: string): string {
   return `${new URL(publicOrigin).origin}/callback`;
 }
 
-async function markerKey(kind: "access" | "consent", value: string): Promise<string> {
+async function markerId(value: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
-  return `iwind:${kind}:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function randomToken(): string {
