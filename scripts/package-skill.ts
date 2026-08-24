@@ -1,27 +1,30 @@
-import { lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { zipSync, type Zippable } from "fflate";
 
+import { safeAtomicWrite } from "./safe-atomic-write.js";
+
 const FIXED_ROOT = "iwind-aifin-connector";
 const FIXED_MTIME = new Date(1980, 0, 1, 0, 0, 0, 0);
 const FILE_ATTRIBUTES = (0o100644 << 16) >>> 0;
+const REPO_ROOT = path.resolve(import.meta.dirname, "..");
+const OUTPUT_DIRECTORY = path.join(REPO_ROOT, "dist");
+const OUTPUT = path.join(OUTPUT_DIRECTORY, "iwind-aifin-connector-skill.zip");
 
-type Options = Readonly<{ source: string; output: string }>;
+type Options = Readonly<{ source: string }>;
 
 function parseArgs(args: ReadonlyArray<string>): Options {
   let source = "skill";
-  let output = "dist/iwind-aifin-connector-skill.zip";
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (value === undefined || (flag !== "--source" && flag !== "--output")) {
+    if (value === undefined || flag !== "--source") {
       throw new Error("PACKAGE_USAGE");
     }
     if (flag === "--source") source = value;
-    if (flag === "--output") output = value;
   }
-  return { source: path.resolve(source), output: path.resolve(output) };
+  return { source: path.resolve(source) };
 }
 
 function utf8Compare(left: string, right: string): number {
@@ -114,11 +117,14 @@ async function packageSkill(options: Options): Promise<void> {
     ];
   }
   const bytes = zipSync(archive, { attrs: FILE_ATTRIBUTES, level: 9, mtime: FIXED_MTIME, os: 3 });
-  await mkdir(path.dirname(options.output), { recursive: true });
-  const temporary = `${options.output}.tmp`;
-  await writeFile(temporary, bytes);
-  await rename(temporary, options.output);
-  process.stdout.write(`PACKAGE_OK ${path.basename(options.output)} files=${files.length}\n`);
+  await safeAtomicWrite({
+    target: OUTPUT,
+    expectedTarget: OUTPUT,
+    allowedDirectory: OUTPUT_DIRECTORY,
+    protectedPaths: [options.source, path.join(REPO_ROOT, "skill")],
+    data: bytes,
+  });
+  process.stdout.write(`PACKAGE_OK ${path.basename(OUTPUT)} files=${files.length}\n`);
 }
 
 try {

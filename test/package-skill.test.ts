@@ -1,25 +1,37 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { unzipSync } from "fflate";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const PACKAGE_SCRIPT = path.join(REPO_ROOT, "scripts", "package-skill.ts");
 const TSX_CLI = path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const FIXED_ROOT = "iwind-aifin-connector";
+const PACKAGE_OUTPUT = path.join(REPO_ROOT, "dist", "iwind-aifin-connector-skill.zip");
+const LEGACY_TEMP = `${PACKAGE_OUTPUT}.tmp`;
 
 type CommandResult = Readonly<{ status: number | null; stdout: string; stderr: string }>;
 
-function runPackage(source: string, output: string): CommandResult {
-  const result = spawnSync(process.execPath, [TSX_CLI, PACKAGE_SCRIPT, "--source", source, "--output", output], {
+function runPackage(args: ReadonlyArray<string> = []): CommandResult {
+  const result = spawnSync(process.execPath, [TSX_CLI, PACKAGE_SCRIPT, ...args], {
     cwd: REPO_ROOT,
     encoding: "utf8",
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+async function removePath(target: string): Promise<void> {
+  try {
+    const info = await lstat(target);
+    if (info.isDirectory() && !info.isSymbolicLink()) await rm(target, { recursive: true });
+    else await unlink(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -59,16 +71,22 @@ async function tempSkill(): Promise<Readonly<{ root: string; source: string }>> 
 }
 
 describe("deterministic Skill packaging", () => {
+  beforeEach(async () => {
+    await mkdir(path.dirname(PACKAGE_OUTPUT), { recursive: true });
+    await removePath(PACKAGE_OUTPUT);
+    await removePath(LEGACY_TEMP);
+  });
+
+  afterEach(async () => {
+    await removePath(PACKAGE_OUTPUT);
+    await removePath(LEGACY_TEMP);
+  });
+
   it("creates byte-identical archives with the fixed allowlisted tree and metadata", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "iwind-package-test-"));
-    const first = path.join(root, "first.zip");
-    const second = path.join(root, "second.zip");
-
-    expect(runPackage(path.join(REPO_ROOT, "skill"), first)).toMatchObject({ status: 0, stderr: "" });
-    expect(runPackage(path.join(REPO_ROOT, "skill"), second)).toMatchObject({ status: 0, stderr: "" });
-
-    const firstBytes = await readFile(first);
-    const secondBytes = await readFile(second);
+    expect(runPackage()).toMatchObject({ status: 0, stderr: "" });
+    const firstBytes = await readFile(PACKAGE_OUTPUT);
+    expect(runPackage()).toMatchObject({ status: 0, stderr: "" });
+    const secondBytes = await readFile(PACKAGE_OUTPUT);
     expect(sha256(firstBytes)).toBe(sha256(secondBytes));
     expect(firstBytes).toEqual(secondBytes);
 
@@ -108,8 +126,53 @@ describe("deterministic Skill packaging", () => {
   ])("rejects a %s instead of silently changing package scope", async (_label, mutate) => {
     const fixture = await tempSkill();
     await mutate(fixture.source);
-    const result = runPackage(fixture.source, path.join(fixture.root, "out.zip"));
+    const result = runPackage(["--source", fixture.source]);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/PACKAGE_UNSAFE_SOURCE/u);
+  });
+
+  it("rejects an output override before it can replace a source file", async () => {
+    const sourcePath = path.join(REPO_ROOT, "skill", "SKILL.md");
+    const sourceBefore = await readFile(sourcePath);
+
+    const result = runPackage(["--output", sourcePath]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toBe("PACKAGE_UNSAFE_SOURCE\n");
+    await expect(readFile(sourcePath)).resolves.toEqual(sourceBefore);
+  });
+
+  it("does not follow a pre-seeded predictable temp symlink into source", async () => {
+    const fixture = await tempSkill();
+    const protectedSource = path.join(fixture.source, "SKILL.md");
+    const sourceBefore = await readFile(protectedSource);
+    await symlink(protectedSource, LEGACY_TEMP);
+
+    const result = runPackage(["--source", fixture.source]);
+    expect(result).toMatchObject({ status: 0, stderr: "" });
+    await expect(readFile(protectedSource)).resolves.toEqual(sourceBefore);
+    expect((await lstat(LEGACY_TEMP)).isSymbolicLink()).toBe(true);
+  });
+
+  it.each(["symlink", "directory"])("rejects a final output %s conflict without touching source", async (kind) => {
+    const fixture = await tempSkill();
+    const protectedSource = path.join(fixture.source, "SKILL.md");
+    const sourceBefore = await readFile(protectedSource);
+    if (kind === "symlink") await symlink(protectedSource, PACKAGE_OUTPUT);
+    else await mkdir(PACKAGE_OUTPUT);
+
+    const result = runPackage(["--source", fixture.source]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toBe("PACKAGE_UNSAFE_SOURCE\n");
+    await expect(readFile(protectedSource)).resolves.toEqual(sourceBefore);
+    expect((await readdir(path.dirname(PACKAGE_OUTPUT))).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
+
+  it("atomically replaces a normal fixed output without leaving temp files", async () => {
+    await writeFile(PACKAGE_OUTPUT, "stale generated output");
+    const result = runPackage();
+
+    expect(result).toMatchObject({ status: 0, stderr: "" });
+    expect(Object.keys(unzipSync(await readFile(PACKAGE_OUTPUT)))).toContain(`${FIXED_ROOT}/SKILL.md`);
+    expect((await readdir(path.dirname(PACKAGE_OUTPUT))).filter((name) => name.includes(".tmp-"))).toEqual([]);
   });
 });

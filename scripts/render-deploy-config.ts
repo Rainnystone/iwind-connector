@@ -1,5 +1,7 @@
-import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+
+import { safeAtomicWrite } from "./safe-atomic-write.js";
 
 type Inputs = Readonly<{
   oauthKvId: string;
@@ -45,22 +47,6 @@ function parseArgs(args: ReadonlyArray<string>): Inputs {
   }
   return { oauthKvId, workerName, publicOrigin, deploymentStage: stage };
 }
-async function assertSafeOutput(): Promise<void> {
-  try {
-    const directory = await lstat(OUTPUT_DIRECTORY);
-    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("DEPLOY_CONFIG_INVALID");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(OUTPUT_DIRECTORY, { recursive: false });
-  }
-  try {
-    const output = await lstat(OUTPUT);
-    if (!output.isFile() || output.isSymbolicLink()) throw new Error("DEPLOY_CONFIG_INVALID");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-}
-
 async function render(inputs: Inputs): Promise<void> {
   const source = JSON.parse(await readFile(SOURCE, "utf8")) as Record<string, unknown>;
   const vars = source.vars;
@@ -83,10 +69,13 @@ async function render(inputs: Inputs): Promise<void> {
     vars: { PUBLIC_ORIGIN: inputs.publicOrigin, DEPLOYMENT_STAGE: inputs.deploymentStage },
     kv_namespaces: [{ binding: "OAUTH_KV", id: inputs.oauthKvId }],
   };
-  await assertSafeOutput();
-  const temporary = `${OUTPUT}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(rendered, null, 2)}\n`, { encoding: "utf8", mode: 0o644 });
-  await rename(temporary, OUTPUT);
+  await safeAtomicWrite({
+    target: OUTPUT,
+    expectedTarget: OUTPUT,
+    allowedDirectory: OUTPUT_DIRECTORY,
+    protectedPaths: [SOURCE, path.dirname(SOURCE)],
+    data: `${JSON.stringify(rendered, null, 2)}\n`,
+  });
   process.stdout.write("DEPLOY_CONFIG_OK dist/wrangler.deploy.jsonc\n");
 }
 

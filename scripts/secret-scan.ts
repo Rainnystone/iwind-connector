@@ -1,9 +1,10 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseEnv } from "node:util";
 
-import { unzipSync } from "fflate";
+import { inflateSync } from "fflate";
 
-type Options = Readonly<{ source: string; zip?: string; secretsFile?: string }>;
+type Options = Readonly<{ source: string; zip: string; secretsFile?: string }>;
 type Finding = Readonly<{ location: string; rule: string }>;
 
 const EXCLUDED_DIRECTORIES = new Set([
@@ -20,13 +21,34 @@ const TEXT_RULES: ReadonlyArray<Readonly<{ id: string; pattern: RegExp }>> = [
   { id: "SECRET_BEARER", pattern: /\bBearer[ \t]+[A-Za-z0-9._~+/=-]{20,}\b/u },
   { id: "SECRET_PRIVATE_KEY", pattern: /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/u },
 ];
+const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 256;
+const MAX_ENTRY_UNCOMPRESSED_BYTES = 1024 * 1024;
+const MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+type ValidatedZipEntry = Readonly<{
+  index: number;
+  name: string;
+  compression: 0 | 8;
+  crc32: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localOffset: number;
+  dataOffset: number;
+  dataEnd: number;
+}>;
+
+class ZipValidationError extends Error {
+  constructor(readonly entryIndex?: number) {
+    super("SECRET_SCAN_ERROR");
+  }
+}
 
 function parseArgs(args: ReadonlyArray<string>): Options {
   let source = ".";
   let zip = "dist/iwind-aifin-connector-skill.zip";
   let secretsFile: string | undefined;
-  let sourceWasExplicit = false;
-  let zipWasExplicit = false;
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
@@ -35,17 +57,15 @@ function parseArgs(args: ReadonlyArray<string>): Options {
     }
     if (flag === "--source") {
       source = value;
-      sourceWasExplicit = true;
     }
     if (flag === "--zip") {
       zip = value;
-      zipWasExplicit = true;
     }
     if (flag === "--secrets-file") secretsFile = value;
   }
   return {
     source: path.resolve(source),
-    ...(!sourceWasExplicit || zipWasExplicit ? { zip: path.resolve(zip) } : {}),
+    zip: path.resolve(zip),
     ...(secretsFile === undefined ? {} : { secretsFile: path.resolve(secretsFile) }),
   };
 }
@@ -83,26 +103,42 @@ function scanBytes(
 async function readExactValues(file: string | undefined): Promise<ReadonlyArray<Uint8Array>> {
   if (file === undefined) return [];
   const source = await readFile(file, "utf8");
-  const values: Uint8Array[] = [];
+  const declaredKeys = new Set<string>();
   for (const rawLine of source.split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (line === "" || line.startsWith("#")) continue;
     const assignment = line.startsWith("export ") ? line.slice(7) : line;
-    const separator = assignment.indexOf("=");
-    if (separator <= 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(assignment.slice(0, separator))) {
-      throw new Error("SECRET_SCAN_ERROR");
-    }
-    let value = assignment.slice(separator + 1).trim();
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (value.length < 8) throw new Error("SECRET_SCAN_ERROR");
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/u.exec(assignment);
+    if (match === null) throw new Error("SECRET_SCAN_ERROR");
+    declaredKeys.add(match[1] ?? "");
+    assertSupportedValueSyntax(match[2] ?? "");
+  }
+  const parsed = parseEnv(source);
+  if (declaredKeys.size === 0 || [...declaredKeys].some((key) => !(key in parsed))) {
+    throw new Error("SECRET_SCAN_ERROR");
+  }
+  const values: Uint8Array[] = [];
+  for (const value of Object.values(parsed)) {
+    if (value === undefined || value.length < 8) throw new Error("SECRET_SCAN_ERROR");
     values.push(Buffer.from(value));
   }
+  if (values.length === 0) throw new Error("SECRET_SCAN_ERROR");
   return values;
+}
+
+function assertSupportedValueSyntax(rawValue: string): void {
+  const value = rawValue.trimStart();
+  const quote = value[0];
+  if (quote !== '"' && quote !== "'") return;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "\\") throw new Error("SECRET_SCAN_ERROR");
+    if (character !== quote) continue;
+    const trailing = value.slice(index + 1).trim();
+    if (trailing === "" || trailing.startsWith("#")) return;
+    throw new Error("SECRET_SCAN_ERROR");
+  }
+  throw new Error("SECRET_SCAN_ERROR");
 }
 
 async function scanSource(
@@ -147,31 +183,271 @@ async function scanZip(
   exactValues: ReadonlyArray<Uint8Array>,
 ): Promise<Readonly<{ findings: ReadonlyArray<Finding>; entries: number }>> {
   const label = relativeLabel(source, zipPath);
-  const archive = unzipSync(await readFile(zipPath));
-  const names = Object.keys(archive).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
-  const findings: Finding[] = [];
-  for (const name of names) {
-    if (path.posix.isAbsolute(name) || name.split("/").includes("..")) {
-      findings.push({ location: `${label}!/${name}`, rule: "SECRET_SCAN_ERROR" });
-      continue;
+  try {
+    const info = await lstat(zipPath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_ARCHIVE_BYTES) {
+      throw new ZipValidationError();
     }
-    const forbiddenRule = pathRule(name);
-    if (forbiddenRule !== undefined) findings.push({ location: `${label}!/${name}`, rule: forbiddenRule });
-    const bytes = archive[name];
-    if (bytes === undefined) throw new Error("SECRET_SCAN_ERROR");
-    findings.push(...scanBytes(bytes, `${label}!/${name}`, exactValues));
+    const archive = await readFile(zipPath);
+    const entries = validateCentralDirectory(archive);
+    const findings: Finding[] = [];
+    for (const entry of entries) {
+      const location = `${label}!/${entry.name}`;
+      const forbiddenRule = pathRule(entry.name);
+      if (forbiddenRule !== undefined) findings.push({ location, rule: forbiddenRule });
+      const bytes = extractEntry(archive, entry);
+      findings.push(...scanBytes(bytes, location, exactValues));
+    }
+    return { findings, entries: entries.length };
+  } catch (error) {
+    const entryIndex = error instanceof ZipValidationError ? error.entryIndex : undefined;
+    const location = entryIndex === undefined ? `${label}!/.` : `${label}!/#entry-${entryIndex + 1}`;
+    return { findings: [{ location, rule: "SECRET_SCAN_ERROR" }], entries: 0 };
   }
-  return { findings, entries: names.length };
+}
+
+function validateCentralDirectory(archive: Uint8Array): ReadonlyArray<ValidatedZipEntry> {
+  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
+  const eocdOffset = findEndOfCentralDirectory(archive, view);
+  const diskNumber = readUint16(view, eocdOffset + 4);
+  const centralDisk = readUint16(view, eocdOffset + 6);
+  const entriesOnDisk = readUint16(view, eocdOffset + 8);
+  const entryCount = readUint16(view, eocdOffset + 10);
+  const centralSize = readUint32(view, eocdOffset + 12);
+  const centralOffset = readUint32(view, eocdOffset + 16);
+  if (
+    diskNumber !== 0 ||
+    centralDisk !== 0 ||
+    entriesOnDisk !== entryCount ||
+    entryCount === 0 ||
+    entryCount === 0xffff ||
+    entryCount > MAX_ZIP_ENTRIES ||
+    centralSize === 0xffffffff ||
+    centralOffset === 0xffffffff ||
+    centralOffset + centralSize !== eocdOffset
+  ) {
+    throw new ZipValidationError();
+  }
+
+  const entries: ValidatedZipEntry[] = [];
+  const names = new Set<string>();
+  const localOffsets = new Set<number>();
+  let totalUncompressed = 0;
+  let cursor = centralOffset;
+  const centralEnd = centralOffset + centralSize;
+  for (let index = 0; index < entryCount; index += 1) {
+    assertRange(archive, cursor, 46, index);
+    if (readUint32(view, cursor) !== 0x02014b50) throw new ZipValidationError(index);
+    const madeBy = readUint16(view, cursor + 4);
+    const flags = readUint16(view, cursor + 8);
+    const compression = readUint16(view, cursor + 10);
+    const crc = readUint32(view, cursor + 16);
+    const compressedSize = readUint32(view, cursor + 20);
+    const uncompressedSize = readUint32(view, cursor + 24);
+    const nameLength = readUint16(view, cursor + 28);
+    const extraLength = readUint16(view, cursor + 30);
+    const commentLength = readUint16(view, cursor + 32);
+    const startDisk = readUint16(view, cursor + 34);
+    const externalAttributes = readUint32(view, cursor + 38);
+    const localOffset = readUint32(view, cursor + 42);
+    const recordLength = 46 + nameLength + extraLength + commentLength;
+    assertRange(archive, cursor, recordLength, index);
+    if (
+      cursor + recordLength > centralEnd ||
+      nameLength === 0 ||
+      startDisk !== 0 ||
+      (flags & ~0x0800) !== 0 ||
+      (compression !== 0 && compression !== 8) ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      uncompressedSize > MAX_ENTRY_UNCOMPRESSED_BYTES ||
+      localOffset === 0xffffffff
+    ) {
+      throw new ZipValidationError(index);
+    }
+    totalUncompressed += uncompressedSize;
+    if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) throw new ZipValidationError(index);
+
+    const name = decodeEntryName(archive.subarray(cursor + 46, cursor + 46 + nameLength), index);
+    assertSafeEntryName(name, index);
+    assertOrdinaryFile(madeBy, externalAttributes, index);
+    if (names.has(name) || localOffsets.has(localOffset)) throw new ZipValidationError(index);
+    names.add(name);
+    localOffsets.add(localOffset);
+
+    const local = validateLocalHeader(
+      archive,
+      view,
+      centralOffset,
+      index,
+      name,
+      flags,
+      compression,
+      crc,
+      compressedSize,
+      uncompressedSize,
+      localOffset,
+    );
+    entries.push({
+      index,
+      name,
+      compression,
+      crc32: crc,
+      compressedSize,
+      uncompressedSize,
+      localOffset,
+      dataOffset: local.dataOffset,
+      dataEnd: local.dataEnd,
+    });
+    cursor += recordLength;
+  }
+  if (cursor !== centralEnd) throw new ZipValidationError();
+  const localRanges = [...entries].sort((left, right) => left.localOffset - right.localOffset);
+  for (let index = 1; index < localRanges.length; index += 1) {
+    const previous = localRanges[index - 1];
+    const current = localRanges[index];
+    if (previous === undefined || current === undefined || previous.dataEnd > current.localOffset) {
+      throw new ZipValidationError(current?.index);
+    }
+  }
+  return entries;
+}
+
+function findEndOfCentralDirectory(archive: Uint8Array, view: DataView): number {
+  if (archive.length < 22) throw new ZipValidationError();
+  const minimum = Math.max(0, archive.length - 22 - 0xffff);
+  for (let offset = archive.length - 22; offset >= minimum; offset -= 1) {
+    if (readUint32(view, offset) !== 0x06054b50) continue;
+    const commentLength = readUint16(view, offset + 20);
+    if (offset + 22 + commentLength === archive.length) return offset;
+  }
+  throw new ZipValidationError();
+}
+
+function validateLocalHeader(
+  archive: Uint8Array,
+  view: DataView,
+  centralOffset: number,
+  index: number,
+  name: string,
+  flags: number,
+  compression: number,
+  crc: number,
+  compressedSize: number,
+  uncompressedSize: number,
+  localOffset: number,
+): Readonly<{ dataOffset: number; dataEnd: number }> {
+  assertRange(archive, localOffset, 30, index);
+  if (
+    readUint32(view, localOffset) !== 0x04034b50 ||
+    readUint16(view, localOffset + 6) !== flags ||
+    readUint16(view, localOffset + 8) !== compression ||
+    readUint32(view, localOffset + 14) !== crc ||
+    readUint32(view, localOffset + 18) !== compressedSize ||
+    readUint32(view, localOffset + 22) !== uncompressedSize
+  ) {
+    throw new ZipValidationError(index);
+  }
+  const nameLength = readUint16(view, localOffset + 26);
+  const extraLength = readUint16(view, localOffset + 28);
+  const dataOffset = localOffset + 30 + nameLength + extraLength;
+  const dataEnd = dataOffset + compressedSize;
+  assertRange(archive, localOffset, 30 + nameLength + extraLength + compressedSize, index);
+  if (dataEnd > centralOffset) throw new ZipValidationError(index);
+  const localName = decodeEntryName(
+    archive.subarray(localOffset + 30, localOffset + 30 + nameLength),
+    index,
+  );
+  if (localName !== name) throw new ZipValidationError(index);
+  return { dataOffset, dataEnd };
+}
+
+function extractEntry(archive: Uint8Array, entry: ValidatedZipEntry): Uint8Array {
+  try {
+    const compressed = archive.subarray(entry.dataOffset, entry.dataEnd);
+    const bytes =
+      entry.compression === 0
+        ? compressed.slice()
+        : inflateSync(compressed, { out: new Uint8Array(entry.uncompressedSize + 1) });
+    if (
+      bytes.length !== entry.uncompressedSize ||
+      (entry.compression === 0 && entry.compressedSize !== entry.uncompressedSize) ||
+      crc32(bytes) !== entry.crc32
+    ) {
+      throw new ZipValidationError(entry.index);
+    }
+    return bytes;
+  } catch (error) {
+    if (error instanceof ZipValidationError) throw error;
+    throw new ZipValidationError(entry.index);
+  }
+}
+
+function assertSafeEntryName(name: string, index: number): void {
+  const segments = name.split("/");
+  if (
+    name === "" ||
+    name.includes("\0") ||
+    name.includes("\\") ||
+    name.startsWith("/") ||
+    /^[A-Za-z]:/u.test(name) ||
+    segments.some((segment) => segment === "" || segment === "." || segment === "..")
+  ) {
+    throw new ZipValidationError(index);
+  }
+}
+
+function assertOrdinaryFile(madeBy: number, externalAttributes: number, index: number): void {
+  const operatingSystem = madeBy >>> 8;
+  if (operatingSystem === 3 || operatingSystem === 19) {
+    const fileType = (externalAttributes >>> 16) & 0o170000;
+    if (fileType !== 0o100000) throw new ZipValidationError(index);
+    return;
+  }
+  if ((externalAttributes & 0x10) !== 0) throw new ZipValidationError(index);
+}
+
+function decodeEntryName(bytes: Uint8Array, index: number): string {
+  try {
+    return UTF8_DECODER.decode(bytes);
+  } catch {
+    throw new ZipValidationError(index);
+  }
+}
+
+function assertRange(archive: Uint8Array, offset: number, length: number, index?: number): void {
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > archive.length) {
+    throw new ZipValidationError(index);
+  }
+}
+
+function readUint16(view: DataView, offset: number): number {
+  if (offset < 0 || offset + 2 > view.byteLength) throw new ZipValidationError();
+  return view.getUint16(offset, true);
+}
+
+function readUint32(view: DataView, offset: number): number {
+  if (offset < 0 || offset + 4 > view.byteLength) throw new ZipValidationError();
+  return view.getUint32(offset, true);
+}
+
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  return crc >>> 0;
+});
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = (CRC32_TABLE[(crc ^ byte) & 0xff] ?? 0) ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const exactValues = await readExactValues(options.secretsFile);
   const sourceResult = await scanSource(options.source, exactValues);
-  const zipResult =
-    options.zip === undefined
-      ? { findings: [], entries: 0 }
-      : await scanZip(options.source, options.zip, exactValues);
+  const zipResult = await scanZip(options.source, options.zip, exactValues);
   const findings = [...sourceResult.findings, ...zipResult.findings]
     .filter((finding, index, all) =>
       all.findIndex((candidate) => candidate.location === finding.location && candidate.rule === finding.rule) === index,
