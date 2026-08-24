@@ -6,6 +6,7 @@
   { "id": "trigger-financial-docs", "prompt": "找某上市公司的官方公告和相关财经新闻。", "shouldTrigger": true, "domain": "financial-docs", "reason": "公司公告与财经新闻", "dateResolution": { "required": false, "start": null, "end": null } },
   { "id": "trigger-analytics", "prompt": "计算一组 A 股的自定义跨实体加权指标。", "shouldTrigger": true, "domain": "analytics", "reason": "预定义工具无法表达的金融计算", "dateResolution": { "required": false, "start": null, "end": null } },
   { "id": "reject-trading", "prompt": "帮我下单买入 100 股贵州茅台。", "shouldTrigger": false, "domain": null, "reason": "trading-write", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-high-frequency-trading", "prompt": "用 Wind 分钟行情和金融计算设计 A 股高频交易策略，并在盘中按信号持续自动调仓。", "shouldTrigger": false, "domain": null, "reason": "high-frequency-trading", "dateResolution": { "required": false, "start": null, "end": null } },
   { "id": "reject-crypto", "prompt": "查询比特币的实时价格和 K 线。", "shouldTrigger": false, "domain": null, "reason": "crypto", "dateResolution": { "required": false, "start": null, "end": null } },
   { "id": "reject-japan-equity", "prompt": "分析丰田汽车日股的基本面。", "shouldTrigger": false, "domain": null, "reason": "japan-equity", "dateResolution": { "required": false, "start": null, "end": null } },
   { "id": "reject-taiwan-equity", "prompt": "查询台积电台股的最新价。", "shouldTrigger": false, "domain": null, "reason": "taiwan-equity", "dateResolution": { "required": false, "start": null, "end": null } },

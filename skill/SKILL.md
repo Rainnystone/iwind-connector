@@ -9,7 +9,7 @@ description: Use when a user needs Wind data for stocks, funds, indexes, macroec
 
 Use the Skill for read-only data about supported mainland China, Hong Kong, and US stocks; funds; indexes; macroeconomic, industry, and foreign-exchange series; company announcements and financial news; and supported financial calculations.
 
-Trading or write actions, crypto assets, Taiwan, Japan, Korea, or Europe equities, futures order books, and any service absent from the manifest are out of scope. For anything out of scope, say so; neither Web Search nor analytics is a substitute.
+High-frequency trading, including strategy design or operation, and other trading or write actions, crypto assets, Taiwan, Japan, Korea, or Europe equities, futures order books, and any service absent from the manifest are out of scope. For anything out of scope, say so; neither Web Search nor analytics is a substitute.
 
 ## Workflow
 

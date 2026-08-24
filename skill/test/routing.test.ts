@@ -84,6 +84,15 @@ function parseToolRows(source: string): ReadonlyMap<string, { readonly use: stri
   return new Map(rows);
 }
 
+function parseMarkdownSection(source: string, heading: string): string {
+  const marker = `## ${heading}\n\n`;
+  const start = source.indexOf(marker);
+  expect(start, `${heading} section`).toBeGreaterThanOrEqual(0);
+  const remainder = source.slice(start + marker.length);
+  const end = remainder.indexOf("\n## ");
+  return end === -1 ? remainder.trim() : remainder.slice(0, end).trim();
+}
+
 describe("deterministic Skill routing evals", () => {
   it("maps all 31 manifest tools exactly once to their owning reference", async () => {
     const manifest = await parseJson<Manifest>("gateway/src/contracts/tool-manifest.json");
@@ -231,6 +240,11 @@ describe("deterministic Skill routing evals", () => {
     const cases = await parseJson<ReadonlyArray<TriggerCase>>("skill/evals/trigger-cases.json");
     const positive = cases.filter(({ shouldTrigger }) => shouldTrigger);
     const negative = cases.filter(({ shouldTrigger }) => !shouldTrigger);
+    const highFrequencyTrading = cases.find(({ id }) => id === "reject-high-frequency-trading");
+    const scopeGate = parseMarkdownSection(
+      await readFile(path.join(ROOT, "skill/SKILL.md"), "utf8"),
+      "Scope gate",
+    );
 
     expect(new Set(positive.map(({ domain }) => domain))).toEqual(
       new Set(["stock", "fund", "index", "economic", "financial-docs", "analytics"]),
@@ -246,9 +260,19 @@ describe("deterministic Skill routing evals", () => {
         "europe-equity",
         "futures-order-book",
         "service-not-in-manifest",
+        "high-frequency-trading",
       ]),
     );
     expect(negative.every(({ domain }) => domain === null)).toBe(true);
+    expect(highFrequencyTrading).toEqual({
+      id: "reject-high-frequency-trading",
+      prompt: "用 Wind 分钟行情和金融计算设计 A 股高频交易策略，并在盘中按信号持续自动调仓。",
+      shouldTrigger: false,
+      domain: null,
+      reason: "high-frequency-trading",
+      dateResolution: { required: false, start: null, end: null },
+    });
+    expect(scopeGate).toMatch(/high-frequency trading/i);
     expect(cases.find(({ id }) => id === "trigger-fund")?.dateResolution).toEqual({
       required: true,
       start: "2025-08-24",
