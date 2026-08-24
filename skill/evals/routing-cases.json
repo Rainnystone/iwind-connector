@@ -221,13 +221,18 @@
   },
   {
     "id": "index-kline",
-    "prompt": "返回沪深 300 指数 000300.SH 在 2025-01-01 至 2025-12-31 的日 K 点位序列。",
+    "prompt": "比较沪深 300 和中证 500 在 2026 年上半年的日度走势和区间涨跌幅。",
     "domain": "index",
     "reference": "references/index.md",
     "expectedTools": ["get_index_kline"],
     "clarification": { "required": false, "subject": null },
-    "dateResolution": { "required": false, "start": "2025-01-01", "end": "2025-12-31" },
-    "forbiddenAlternatives": ["get_index_quote", "get_index_technicals"]
+    "dateResolution": { "required": false, "start": "2026-01-01", "end": "2026-06-30" },
+    "derivedResult": {
+      "method": "transparent-arithmetic",
+      "inputs": ["first-validated-close", "last-validated-close"],
+      "formula": "last / first - 1"
+    },
+    "forbiddenAlternatives": ["get_index_technicals", "get_financial_data"]
   },
   {
     "id": "index-current-snapshot",

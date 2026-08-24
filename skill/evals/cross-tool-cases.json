@@ -1,0 +1,20 @@
+[
+  {
+    "id": "stock-free-float-market-cap",
+    "prompt": "按贵州茅台和招商银行截至 2026-08-24 最新披露的自由流通股本，乘以 2026-08-24 当日最新价格，计算两家公司的自由流通市值合计。",
+    "domain": "stock",
+    "references": ["references/stock.md", "references/analytics.md"],
+    "primaryCoverage": false,
+    "expectedTools": ["get_stock_equity_holders", "get_stock_price_indicators"],
+    "historicalPriceTool": "get_stock_kline",
+    "calculation": {
+      "method": "transparent-arithmetic",
+      "formula": "sum(free-float shares * same-date price)",
+      "sameDateRequired": true
+    },
+    "forbiddenAlternatives": ["get_stock_fundamentals", "get_financial_data"],
+    "forbiddenAssumptions": [
+      "ordinary circulating market value equals free-float market capitalization"
+    ]
+  }
+]
