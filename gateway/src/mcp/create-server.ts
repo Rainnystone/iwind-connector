@@ -1,5 +1,5 @@
 import { McpServer, fromJsonSchema, type McpRequestContext } from "@modelcontextprotocol/server";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/server/validators/ajv";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/server/validators/cf-worker";
 
 import { loadManifest } from "../contracts/load-manifest";
 import { invokeWindTool } from "../invocation/invoke";
@@ -35,6 +35,7 @@ export function createIWindMcpServer(
   options: CreateIWindMcpServerOptions,
 ): McpServer {
   const server = new McpServer({ name: "iwind-connector", version: "0.1.0" });
+  const schemaValidator = new CfWorkerJsonSchemaValidator();
   const invoke = options.invoke ?? invokeWindTool;
 
   for (const upstream of loadManifest().upstreams) {
@@ -45,7 +46,7 @@ export function createIWindMcpServer(
           description: tool.description,
           inputSchema: fromJsonSchema<Record<string, unknown>>(
             tool.inputSchema,
-            new AjvJsonSchemaValidator(),
+            schemaValidator,
           ),
           annotations: TOOL_ANNOTATIONS,
         },

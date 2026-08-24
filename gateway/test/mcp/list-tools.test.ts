@@ -1,11 +1,39 @@
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { loadManifest } from "../../src/contracts/load-manifest";
 import { createIWindMcpServer } from "../../src/mcp/create-server";
 
 describe("iWind MCP tool discovery", () => {
+  it("constructs and discovers all tools when runtime Function compilation is forbidden", async () => {
+    const forbiddenFunction = vi.fn(() => {
+      throw new Error("runtime Function compilation is forbidden");
+    });
+    let server: ReturnType<typeof createIWindMcpServer> | undefined;
+    vi.stubGlobal("Function", forbiddenFunction);
+    try {
+      server = createIWindMcpServer({ era: "modern" }, {
+        env: {} as never,
+        waitUntil: () => undefined,
+        invoke: async () => ({ toolResult: { content: [] }, notice: null }),
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(forbiddenFunction).not.toHaveBeenCalled();
+    expect(server).toBeDefined();
+    if (server === undefined) throw new Error("MCP server construction failed");
+
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.listTools();
+    expect(result.tools).toHaveLength(31);
+    await Promise.all([client.close(), server.close()]);
+  });
+
   it("exposes exactly the frozen 31 native schemas and read-only annotations", async () => {
     const server = createIWindMcpServer({ era: "modern" }, {
       env: {} as never,
