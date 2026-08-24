@@ -7,7 +7,7 @@ export default defineConfig({
       {
         test: {
           name: "node",
-          include: ["gateway/test/**/*.test.ts", "skill/test/**/*.test.ts"],
+          include: ["gateway/test/**/*.test.ts", "skill/test/**/*.test.ts", "test/**/*.test.ts"],
           exclude: [
             "gateway/test/key-pool/**/*.test.ts",
             "gateway/test/invocation/**/*.test.ts",

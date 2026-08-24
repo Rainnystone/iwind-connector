@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "iwind-aifin-connector": {
+      "url": "https://runtime-configuration.invalid/mcp"
+    }
+  }
+}

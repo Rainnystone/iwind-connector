@@ -17,7 +17,7 @@ export default tseslint.config(
   },
   ...tseslint.configs.recommended.map((config) => ({
     ...config,
-    files: ["gateway/test/**/*.ts", "skill/test/**/*.ts"],
+    files: ["gateway/test/**/*.ts", "skill/test/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
   })),
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,
