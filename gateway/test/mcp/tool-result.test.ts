@@ -37,4 +37,35 @@ describe("MCP tool result adapter", () => {
       },
     });
   });
+
+  it("keeps every upstream metadata key when its reserved notice family is occupied", () => {
+    const upstream = {
+      content: [{ type: "text" as const, text: "data" }],
+      _meta: {
+        "com.iwind.gateway.opsNoticeV1": "upstream-primary",
+        "com.iwind.gateway.opsNoticeV1.1": "upstream-first-suffix",
+        "com.iwind.gateway.opsNoticeV1.2": "upstream-second-suffix",
+      },
+    };
+    const result = toMcpToolResult(upstream, {
+      schemaVersion: 1,
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "auth",
+      finalStatus: "succeeded",
+      requestId: "collision-test",
+    });
+
+    expect(upstream._meta).toEqual({
+      "com.iwind.gateway.opsNoticeV1": "upstream-primary",
+      "com.iwind.gateway.opsNoticeV1.1": "upstream-first-suffix",
+      "com.iwind.gateway.opsNoticeV1.2": "upstream-second-suffix",
+    });
+    expect(result._meta).toMatchObject({
+      "com.iwind.gateway.opsNoticeV1": "upstream-primary",
+      "com.iwind.gateway.opsNoticeV1.1": "upstream-first-suffix",
+      "com.iwind.gateway.opsNoticeV1.2": "upstream-second-suffix",
+      "com.iwind.gateway.opsNoticeV1.3": expect.objectContaining({ requestId: "collision-test" }),
+    });
+    expect(result.content).toHaveLength(2);
+  });
 });

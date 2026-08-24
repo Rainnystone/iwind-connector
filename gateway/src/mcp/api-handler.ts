@@ -1,25 +1,37 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createMcpHandler } from "agents/mcp/server";
-import type { McpRequestContext } from "@modelcontextprotocol/server";
+import type { McpRequestContext, McpServer } from "@modelcontextprotocol/server";
 
 import { createIWindMcpServer, type AuthProps } from "./create-server";
 
-export class McpApiHandler extends WorkerEntrypoint<Cloudflare.Env, AuthProps> {
-  override async fetch(request: Request): Promise<Response> {
+export interface McpRequestHandlerOptions {
+  readonly env: Cloudflare.Env;
+  readonly context: ExecutionContext<AuthProps>;
+  readonly createServer?: (requestContext: McpRequestContext) => McpServer;
+}
+
+export function createMcpRequestHandler(options: McpRequestHandlerOptions): (request: Request) => Promise<Response> {
+  return async (request) => {
     if (new URL(request.url).pathname !== "/mcp") {
       return new Response("Not Found", { status: 404 });
     }
-    if (!hasReadScope(this.ctx.props)) {
+    if (!hasReadScope(options.context.props)) {
       return new Response("Forbidden", { status: 403 });
     }
 
-    const handler = createMcpHandler((requestContext: McpRequestContext) =>
+    const createServer = options.createServer ?? ((requestContext: McpRequestContext) =>
       createIWindMcpServer(requestContext, {
-        env: this.env,
-        waitUntil: (promise) => this.ctx.waitUntil(promise),
-      }),
-    );
-    return handler(request, this.env, this.ctx);
+        env: options.env,
+        waitUntil: (promise) => options.context.waitUntil(promise),
+      }));
+    const handler = createMcpHandler(createServer);
+    return handler(request, options.env, options.context);
+  };
+}
+
+export class McpApiHandler extends WorkerEntrypoint<Cloudflare.Env, AuthProps> {
+  override async fetch(request: Request): Promise<Response> {
+    return createMcpRequestHandler({ env: this.env, context: this.ctx })(request);
   }
 }
 

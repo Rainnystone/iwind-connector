@@ -18,7 +18,7 @@ export function toMcpToolResult(
     content: [...upstream.content, encoded],
     _meta: {
       ...(upstream._meta ?? {}),
-      [OPS_NOTICE_META_KEY]: {
+      [availableNoticeMetaKey(upstream._meta)]: {
         schemaVersion: noticeValue.schemaVersion,
         code: noticeValue.code,
         initialCategory: noticeValue.initialCategory,
@@ -27,4 +27,14 @@ export function toMcpToolResult(
       },
     },
   };
+}
+
+function availableNoticeMetaKey(meta: CallToolResult["_meta"]): string {
+  const occupied = meta ?? {};
+  let suffix = 0;
+  while (true) {
+    const candidate = suffix === 0 ? OPS_NOTICE_META_KEY : `${OPS_NOTICE_META_KEY}.${suffix}`;
+    if (!(candidate in occupied)) return candidate;
+    suffix += 1;
+  }
 }
