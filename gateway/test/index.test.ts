@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 
 describe("gateway worker", () => {
-  it("returns a minimal 404 response before MCP routes are registered", async () => {
-    const responsePromise = worker.fetch();
+  it("keeps the default Worker surface closed until Task 7 OAuth delegates authenticated props", async () => {
+    const responsePromise = worker.fetch(new Request("https://gateway.test/mcp"));
 
     expect(responsePromise).toBeInstanceOf(Promise);
     const response = await responsePromise;
-    expect(response.status).toBe(404);
-    await expect(response.text()).resolves.toBe("Not Found");
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe("Forbidden");
+
+    const other = await worker.fetch(new Request("https://gateway.test/unknown"));
+    expect(other.status).toBe(404);
   });
 });
