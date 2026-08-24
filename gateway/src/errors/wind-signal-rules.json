@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "codeFieldPath": ["error", "code"],
+  "resetFieldPath": ["error", "reset_at"],
+  "rules": [
+    {
+      "code": "DAILY_LIMIT_ERROR",
+      "category": "daily_quota",
+      "stableCode": "WIND_DAILY_QUOTA",
+      "evidence": "vendor_structured_contract"
+    },
+    {
+      "code": "BALANCE_ERROR",
+      "category": "balance",
+      "stableCode": "WIND_BALANCE",
+      "evidence": "vendor_structured_contract"
+    },
+    {
+      "code": "AUTH_ERROR",
+      "category": "auth",
+      "stableCode": "WIND_AUTH",
+      "evidence": "vendor_structured_contract"
+    },
+    {
+      "code": "RATE_LIMIT_ERROR",
+      "category": "qps",
+      "stableCode": "WIND_QPS",
+      "evidence": "vendor_structured_contract"
+    },
+    {
+      "code": "CONCURRENCY_LIMIT_ERROR",
+      "category": "concurrency",
+      "stableCode": "WIND_CONCURRENCY",
+      "evidence": "vendor_structured_contract"
+    }
+  ]
+}
