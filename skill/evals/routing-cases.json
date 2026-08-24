@@ -1,0 +1,312 @@
+[
+  {
+    "id": "stock-risk-metrics",
+    "prompt": "查询宁德时代 300750.SZ 在 2025-08-24 至 2026-08-24 的 Beta、年化波动率和最大回撤。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_risk_metrics"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2025-08-24", "end": "2026-08-24" },
+    "forbiddenAlternatives": ["get_stock_technicals", "get_financial_data"]
+  },
+  {
+    "id": "stock-basic-info",
+    "prompt": "贵州茅台 600519.SH 的上市板、所属行业和主营业务是什么？",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_basicinfo"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["search_stocks", "get_stock_fundamentals"]
+  },
+  {
+    "id": "stock-equity-holders",
+    "prompt": "查询贵州茅台 600519.SH 2025 年报的前十大股东和流通 A 股占比。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_equity_holders"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_stock_fundamentals", "get_company_announcements"]
+  },
+  {
+    "id": "stock-structured-events",
+    "prompt": "列出伊利股份 600887.SH 在 2023-01-01 至 2025-12-31 的结构化分红派息记录，不要公告原文。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_events"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2023-01-01", "end": "2025-12-31" },
+    "forbiddenAlternatives": ["get_company_announcements", "get_stock_basicinfo"]
+  },
+  {
+    "id": "stock-fundamentals",
+    "prompt": "查询招商银行 600036.SH 2025-12-31 的 ROE、净息差和资产负债率。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_fundamentals"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": "2025-12-31" },
+    "forbiddenAlternatives": ["get_risk_metrics", "get_stock_price_indicators"]
+  },
+  {
+    "id": "stock-kline-relative-date",
+    "prompt": "今天是 2026-08-24，看贵州茅台 600519.SH 上个月的日 K 走势。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_kline"],
+    "clarification": { "required": true, "subject": "复权口径" },
+    "dateResolution": { "required": true, "start": "2026-07-01", "end": "2026-07-31" },
+    "forbiddenAlternatives": ["get_stock_quote", "get_stock_technicals"]
+  },
+  {
+    "id": "stock-current-snapshot",
+    "prompt": "给我贵州茅台 600519.SH 当前最新成交价、今日涨跌幅和成交量快照。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_price_indicators"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_stock_quote", "search_stocks"]
+  },
+  {
+    "id": "stock-minute-series",
+    "prompt": "返回贵州茅台 600519.SH 在 2026-08-21 当日的分钟级量价序列。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_quote"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2026-08-21", "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_stock_price_indicators", "get_stock_kline"]
+  },
+  {
+    "id": "stock-technicals",
+    "prompt": "查询贵州茅台 600519.SH 截至 2026-08-21 的 MACD、RSI 和 20 日涨跌幅。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["get_stock_technicals"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_risk_metrics", "get_stock_kline"]
+  },
+  {
+    "id": "stock-entity-screening",
+    "prompt": "筛选沪深 A 股中市值超 500 亿且连续 5 日上涨的公司。",
+    "domain": "stock",
+    "reference": "references/stock.md",
+    "expectedTools": ["search_stocks"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_financial_data", "get_stock_basicinfo"]
+  },
+  {
+    "id": "fund-company-info",
+    "prompt": "易方达蓝筹精选 005827.OF 的管理人公司在管规模和基金经理团队情况。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_company_info"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_info", "search_funds"]
+  },
+  {
+    "id": "fund-financials",
+    "prompt": "查询易方达蓝筹精选 005827.OF 2025 年的基金利润、管理费和分红总额。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_financials"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_performance", "get_fund_holders"]
+  },
+  {
+    "id": "fund-holders",
+    "prompt": "查询易方达蓝筹精选 005827.OF 2025 年报的份额总数、机构持有比例和申购赎回变化。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_holders"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_holdings", "get_fund_financials"]
+  },
+  {
+    "id": "fund-holdings",
+    "prompt": "查询易方达蓝筹精选 005827.OF 2025 年报的前十大重仓股和行业配置。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_holdings"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_holders", "get_stock_equity_holders"]
+  },
+  {
+    "id": "fund-product-info",
+    "prompt": "易方达蓝筹精选 005827.OF 的投资类型、管理费率、现任基金经理和业绩比较基准。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_info"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_company_info", "get_fund_performance"]
+  },
+  {
+    "id": "fund-kline",
+    "prompt": "返回沪深 300 ETF 510300.SH 在 2026-06-01 至 2026-06-30 的日 K 线。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_kline"],
+    "clarification": { "required": true, "subject": "复权口径" },
+    "dateResolution": { "required": false, "start": "2026-06-01", "end": "2026-06-30" },
+    "forbiddenAlternatives": ["get_fund_quote", "get_fund_performance"]
+  },
+  {
+    "id": "fund-performance-off-exchange",
+    "prompt": "查询场外基金易方达蓝筹精选 005827.OF 在 2025-08-24 至 2026-08-24 的净值、收益率、夏普比率和最大回撤。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_performance"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2025-08-24", "end": "2026-08-24" },
+    "forbiddenAlternatives": ["get_fund_quote", "get_fund_price_indicators"]
+  },
+  {
+    "id": "fund-current-snapshot",
+    "prompt": "沪深 300 ETF 510300.SH 当前最新成交价、IOPV 和涨跌幅快照。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_price_indicators"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_fund_quote", "get_fund_performance"]
+  },
+  {
+    "id": "fund-minute-series",
+    "prompt": "返回沪深 300 ETF 510300.SH 在 2026-08-21 当日的分钟级价格序列。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["get_fund_quote"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2026-08-21", "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_fund_price_indicators", "get_fund_kline"]
+  },
+  {
+    "id": "fund-screening",
+    "prompt": "筛选近一年收益率超 20% 且规模超 50 亿元的股票型基金。",
+    "domain": "fund",
+    "reference": "references/fund.md",
+    "expectedTools": ["search_funds"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": true, "start": "2025-08-24", "end": "2026-08-24" },
+    "forbiddenAlternatives": ["get_financial_data", "get_fund_info"]
+  },
+  {
+    "id": "index-basic-info",
+    "prompt": "沪深 300 指数的发布机构、基日基点、成份数量和计算方法。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_basicinfo"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_index_fundamentals", "search_stocks"]
+  },
+  {
+    "id": "index-fundamentals",
+    "prompt": "查询沪深 300 指数 000300.SH 在 2026-08-21 的加权 PE、PB 和股息率。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_fundamentals"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_stock_fundamentals", "get_financial_data"]
+  },
+  {
+    "id": "index-kline",
+    "prompt": "返回沪深 300 指数 000300.SH 在 2025-01-01 至 2025-12-31 的日 K 点位序列。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_kline"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2025-01-01", "end": "2025-12-31" },
+    "forbiddenAlternatives": ["get_index_quote", "get_index_technicals"]
+  },
+  {
+    "id": "index-current-snapshot",
+    "prompt": "沪深 300 指数 000300.SH 当前点位、今日涨跌幅和成交额快照。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_price_indicators"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": null },
+    "forbiddenAlternatives": ["get_index_quote", "get_index_kline"]
+  },
+  {
+    "id": "index-minute-series",
+    "prompt": "返回沪深 300 指数 000300.SH 在 2026-08-21 当日的分钟级点位序列。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_quote"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2026-08-21", "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_index_price_indicators", "get_index_kline"]
+  },
+  {
+    "id": "index-technicals",
+    "prompt": "查询沪深 300 指数 000300.SH 截至 2026-08-21 的均线、区间涨跌幅和 MFI。",
+    "domain": "index",
+    "reference": "references/index.md",
+    "expectedTools": ["get_index_technicals"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": null, "end": "2026-08-21" },
+    "forbiddenAlternatives": ["get_index_kline", "get_risk_metrics"]
+  },
+  {
+    "id": "economic-direct-series",
+    "prompt": "提取中国 GDP 在 2020-01-01 至 2025-12-31 的年度序列，保留原币种和原量级。",
+    "domain": "economic",
+    "reference": "references/economic.md",
+    "expectedTools": ["get_economic_data"],
+    "clarification": { "required": true, "subject": "GDP 价格口径" },
+    "dateResolution": { "required": false, "start": "2020-01-01", "end": "2025-12-31" },
+    "forbiddenAlternatives": ["natural_language_get_edb_data", "get_financial_data"]
+  },
+  {
+    "id": "economic-discover-and-align",
+    "prompt": "找到中美制造业 PMI 指标并返回 2025-01-01 至 2025-12-31 的月度数据，统一频率后对比。",
+    "domain": "economic",
+    "reference": "references/economic.md",
+    "expectedTools": ["natural_language_get_edb_data"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2025-01-01", "end": "2025-12-31" },
+    "forbiddenAlternatives": ["get_economic_data", "get_financial_data"]
+  },
+  {
+    "id": "docs-official-announcements",
+    "prompt": "检索贵州茅台 600519.SH 在 2026-01-01 至 2026-08-24 披露的分红派息官方公告原文。",
+    "domain": "financial-docs",
+    "reference": "references/financial-docs.md",
+    "expectedTools": ["get_company_announcements"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2026-01-01", "end": "2026-08-24" },
+    "forbiddenAlternatives": ["get_stock_events", "get_financial_news"]
+  },
+  {
+    "id": "docs-financial-news",
+    "prompt": "检索 2026-08-17 至 2026-08-24 美联储利率政策的财经新闻。",
+    "domain": "financial-docs",
+    "reference": "references/financial-docs.md",
+    "expectedTools": ["get_financial_news"],
+    "clarification": { "required": false, "subject": null },
+    "dateResolution": { "required": false, "start": "2026-08-17", "end": "2026-08-24" },
+    "forbiddenAlternatives": ["get_company_announcements", "natural_language_get_edb_data"]
+  },
+  {
+    "id": "analytics-custom-cross-entity",
+    "prompt": "按 2025 年日均成交量为权重，计算用户给定的 20 只 A 股的自定义加权收益率；没有预定义工具可直接返回该结果。",
+    "domain": "analytics",
+    "reference": "references/analytics.md",
+    "expectedTools": ["get_financial_data"],
+    "clarification": { "required": true, "subject": "收益率与权重口径" },
+    "dateResolution": { "required": false, "start": "2025-01-01", "end": "2025-12-31" },
+    "forbiddenAlternatives": ["search_stocks", "web_search"]
+  }
+]

@@ -1,0 +1,16 @@
+[
+  { "id": "trigger-stock", "prompt": "查询贵州茅台的 ROE 和估值。", "shouldTrigger": true, "domain": "stock", "reason": "股票基本面数据", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "trigger-fund", "prompt": "对比两只基金的近一年收益与最大回撤。", "shouldTrigger": true, "domain": "fund", "reason": "基金业绩数据", "dateResolution": { "required": true, "start": "2025-08-24", "end": "2026-08-24" } },
+  { "id": "trigger-index", "prompt": "查看沪深 300 指数 2025 年的日 K 线。", "shouldTrigger": true, "domain": "index", "reason": "指数点位序列", "dateResolution": { "required": false, "start": "2025-01-01", "end": "2025-12-31" } },
+  { "id": "trigger-economic", "prompt": "用 Wind 提取中国 CPI、煤炭行业产量和人民币汇率序列。", "shouldTrigger": true, "domain": "economic", "reason": "宏观、行业与汇率时间序列", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "trigger-financial-docs", "prompt": "找某上市公司的官方公告和相关财经新闻。", "shouldTrigger": true, "domain": "financial-docs", "reason": "公司公告与财经新闻", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "trigger-analytics", "prompt": "计算一组 A 股的自定义跨实体加权指标。", "shouldTrigger": true, "domain": "analytics", "reason": "预定义工具无法表达的金融计算", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-trading", "prompt": "帮我下单买入 100 股贵州茅台。", "shouldTrigger": false, "domain": null, "reason": "trading-write", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-crypto", "prompt": "查询比特币的实时价格和 K 线。", "shouldTrigger": false, "domain": null, "reason": "crypto", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-japan-equity", "prompt": "分析丰田汽车日股的基本面。", "shouldTrigger": false, "domain": null, "reason": "japan-equity", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-taiwan-equity", "prompt": "查询台积电台股的最新价。", "shouldTrigger": false, "domain": null, "reason": "taiwan-equity", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-korea-equity", "prompt": "查询三星电子韩股的股东结构。", "shouldTrigger": false, "domain": null, "reason": "korea-equity", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-europe-equity", "prompt": "分析西门子欧股的技术指标。", "shouldTrigger": false, "domain": null, "reason": "europe-equity", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-futures-order-book", "prompt": "给我沪铜期货五档盘口。", "shouldTrigger": false, "domain": null, "reason": "futures-order-book", "dateResolution": { "required": false, "start": null, "end": null } },
+  { "id": "reject-unsupported-service", "prompt": "用 Wind 查询保险产品报价服务。", "shouldTrigger": false, "domain": null, "reason": "service-not-in-manifest", "dateResolution": { "required": false, "start": null, "end": null } }
+]

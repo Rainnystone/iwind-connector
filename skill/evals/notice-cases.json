@@ -1,0 +1,44 @@
+[
+  {
+    "id": "normal-success",
+    "notice": null,
+    "queryCompleted": true,
+    "mayUseData": true,
+    "operationsSentence": null
+  },
+  {
+    "id": "rotated-success",
+    "notice": { "schemaVersion": 1, "code": "WIND_KEY_ROTATED", "initialCategory": "daily_quota", "finalStatus": "succeeded", "requestId": "opaque-rotated" },
+    "queryCompleted": true,
+    "mayUseData": true,
+    "operationsSentence": "服务发生明确错误，系统已完成自动轮换，本次查询成功。"
+  },
+  {
+    "id": "rotation-failed",
+    "notice": { "schemaVersion": 1, "code": "WIND_KEY_ROTATION_FAILED", "initialCategory": "auth", "finalStatus": "failed", "requestId": "opaque-rotation-failed" },
+    "queryCompleted": false,
+    "mayUseData": false,
+    "operationsSentence": "本次查询未完成：服务发生明确错误后尝试自动轮换，但轮换未能完成查询。"
+  },
+  {
+    "id": "pool-exhausted",
+    "notice": { "schemaVersion": 1, "code": "KEY_POOL_EXHAUSTED", "initialCategory": "daily_quota", "finalStatus": "failed", "requestId": "opaque-pool-exhausted" },
+    "queryCompleted": false,
+    "mayUseData": false,
+    "operationsSentence": "本次查询未完成：服务当前没有可用访问能力，请补充、替换或恢复服务配置后重试。"
+  },
+  {
+    "id": "gateway-busy",
+    "notice": { "schemaVersion": 1, "code": "GATEWAY_BUSY", "initialCategory": "concurrency", "finalStatus": "failed", "requestId": "opaque-busy" },
+    "queryCompleted": false,
+    "mayUseData": false,
+    "operationsSentence": "本次查询未完成：服务正忙，请稍后重试；本次未执行自动轮换。"
+  },
+  {
+    "id": "non-rotating-request-failure",
+    "notice": { "schemaVersion": 1, "code": "WIND_REQUEST_FAILED", "initialCategory": "timeout", "finalStatus": "failed", "requestId": "opaque-request-failed" },
+    "queryCompleted": false,
+    "mayUseData": false,
+    "operationsSentence": "本次查询未完成：服务请求失败，本次未执行自动轮换。"
+  }
+]

@@ -14,7 +14,8 @@
     "test:unit": "vitest run gateway/test",
     "build": "wrangler deploy --dry-run --config gateway/wrangler.jsonc",
     "contract:probe": "tsx gateway/scripts/probe-wind.ts",
-    "contract:verify": "tsx gateway/scripts/verify-manifest.ts"
+    "contract:verify": "tsx gateway/scripts/verify-manifest.ts",
+    "skill:verify": "vitest run skill/test"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "0.10.3",
