@@ -26,6 +26,7 @@ const MAX_ZIP_ENTRIES = 256;
 const MAX_ENTRY_UNCOMPRESSED_BYTES = 1024 * 1024;
 const MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const UNSAFE_ENTRY_NAME_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 type ValidatedZipEntry = Readonly<{
   index: number;
@@ -387,7 +388,7 @@ function assertSafeEntryName(name: string, index: number): void {
   const segments = name.split("/");
   if (
     name === "" ||
-    name.includes("\0") ||
+    UNSAFE_ENTRY_NAME_CHARACTERS.test(name) ||
     name.includes("\\") ||
     name.startsWith("/") ||
     /^[A-Za-z]:/u.test(name) ||

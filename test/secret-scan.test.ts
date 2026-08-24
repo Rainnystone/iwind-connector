@@ -170,6 +170,41 @@ describe("fail-closed Secret scanner", () => {
     expect(result.stdout).toBe("");
   });
 
+  it.each([
+    ["LF", "\n"],
+    ["CR", "\r"],
+    ["ESC", "\u001b"],
+    ["C0 unit separator", "\u001f"],
+    ["DEL", "\u007f"],
+    ["C1 next line", "\u0085"],
+    ["Unicode bidi format", "\u202e"],
+    ["Unicode line separator", "\u2028"],
+    ["Unicode paragraph separator", "\u2029"],
+  ])("rejects a zip entry name containing %s without echoing untrusted diagnostics", async (_label, character) => {
+    const root = await emptyRoot();
+    const zipPath = path.join(root, "artifact.zip");
+    const entryName = `iwind-aifin-connector/name-canary${character}tail.md`;
+    const secret = `Bearer ${"C0n7r0l9".repeat(5)}`;
+    await writeFile(zipPath, zipSync({ [entryName]: strToU8(secret) }));
+
+    const result = runScan(["--source", root, "--zip", zipPath]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toBe("artifact.zip!/#entry-1 SECRET_SCAN_ERROR\n");
+    expect(result.stdout).toBe("");
+    expect(`${result.stdout}${result.stderr}`).not.toContain("name-canary");
+    expect(`${result.stdout}${result.stderr}`).not.toContain(secret);
+  });
+
+  it("continues to scan ordinary UTF-8 zip entry names", async () => {
+    const root = await emptyRoot();
+    const zipPath = path.join(root, "artifact.zip");
+    await writeFile(zipPath, zipSync({ "iwind-aifin-connector/财务公告.md": strToU8("Clean instructions.\n") }));
+
+    const result = runScan(["--source", root, "--zip", zipPath]);
+    expect(result).toMatchObject({ status: 0, stderr: "" });
+    expect(result.stdout).toBe("SECRET_SCAN_OK files=1 zip_entries=1\n");
+  });
+
   it("still scans the default archive when source is explicitly set to dot", async () => {
     const root = await emptyRoot();
     const dist = path.join(root, "dist");
