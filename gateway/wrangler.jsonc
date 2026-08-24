@@ -3,5 +3,22 @@
   "name": "iwind-connector",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-21",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"]
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "secrets": {
+    "required": ["WIND_API_KEY_01", "WIND_API_KEY_02"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "KEY_POOL",
+        "class_name": "KeyPool"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["KeyPool"]
+    }
+  ]
 }
