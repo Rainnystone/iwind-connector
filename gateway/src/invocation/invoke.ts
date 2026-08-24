@@ -207,6 +207,9 @@ export async function invokeWindTool(
             );
             return { toolResult, notice };
           },
+          keyPool.consumeTestOutcome === undefined
+            ? undefined
+            : () => keyPool.consumeTestOutcome?.(acquisition.slotId) ?? Promise.resolve(null),
         );
         if (outcome.kind === "completed") return outcome.result;
         failure = outcome.failure;
@@ -288,10 +291,15 @@ async function callOnLease(
   sleep: (delayMs: number) => Promise<void>,
   recordBytes: (bytes: number | null) => void,
   complete: (toolResult: CallToolResult) => Promise<InvocationResult>,
+  consumeTestOutcome?: () => Promise<WindFailureCategory | null>,
 ): Promise<CallOnLeaseOutcome> {
   let retried = false;
   while (true) {
     try {
+      const injectedCategory = await consumeTestOutcome?.();
+      if (injectedCategory !== undefined && injectedCategory !== null) {
+        throw syntheticFailure(injectedCategory);
+      }
       const toolResult = await caller.call({
         upstream: route.upstream,
         toolName: request.toolName,
@@ -373,7 +381,38 @@ function keyPoolFromEnvironment(
   return {
     acquire: (requestId) => acquireKeyPoolLease(env, requestId),
     report: (input) => stub.reportOutcome(input),
+    ...(env.DEPLOYMENT_STAGE === "staging"
+      ? { consumeTestOutcome: (slotId: SlotId) => stub.consumeNextTestOutcome(slotId) }
+      : {}),
   };
+}
+
+function syntheticFailure(category: WindFailureCategory): WindCallFailure {
+  switch (category) {
+    case "daily_quota":
+      return new WindCallFailure({ body: JSON.stringify({ error: { code: "DAILY_LIMIT_ERROR" } }) });
+    case "balance":
+      return new WindCallFailure({ body: JSON.stringify({ error: { code: "BALANCE_ERROR" } }) });
+    case "auth":
+      return new WindCallFailure({ body: JSON.stringify({ error: { code: "AUTH_ERROR" } }) });
+    case "qps":
+      return new WindCallFailure({ status: 429, headers: { "retry-after": "0" } });
+    case "concurrency":
+      return new WindCallFailure({ body: JSON.stringify({ error: { code: "CONCURRENCY_LIMIT_ERROR" } }) });
+    case "upstream_5xx":
+      return new WindCallFailure({ status: 503 });
+    case "timeout": {
+      const error = new Error("synthetic timeout");
+      error.name = "AbortError";
+      return new WindCallFailure({ error });
+    }
+    case "network":
+      return new WindCallFailure({ error: new TypeError("synthetic network") });
+    case "response_too_large":
+      return new WindCallFailure({}, MAX_RESPONSE_BYTES + 1, "response_too_large");
+    case "unknown":
+      return new WindCallFailure({ body: "{}" });
+  }
 }
 
 function cleanupOrFailure(

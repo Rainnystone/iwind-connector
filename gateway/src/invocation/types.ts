@@ -30,12 +30,14 @@ export interface WindToolCaller {
 export interface InvocationKeyPool {
   acquire(requestId: string): Promise<AcquireLeaseResult>;
   report(input: ReportOutcomeInput): Promise<void>;
+  consumeTestOutcome?(slotId: SlotId): Promise<Exclude<ReportOutcomeInput["category"], "success"> | null>;
 }
 
 export interface InvocationEnvironment {
   readonly KEY_POOL: Cloudflare.Env["KEY_POOL"];
   readonly WIND_API_KEY_01: string | undefined;
   readonly WIND_API_KEY_02: string | undefined;
+  readonly DEPLOYMENT_STAGE?: string;
 }
 
 export interface InvocationDependencies {

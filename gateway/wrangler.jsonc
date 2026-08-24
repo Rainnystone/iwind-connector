@@ -4,8 +4,34 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-21",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "vars": {
+    "PUBLIC_ORIGIN": "http://localhost:8787",
+    "DEPLOYMENT_STAGE": "local"
+  },
   "secrets": {
-    "required": ["WIND_API_KEY_01", "WIND_API_KEY_02"]
+    "required": [
+      "WIND_API_KEY_01",
+      "WIND_API_KEY_02",
+      "ADMIN_TOKEN",
+      "COOKIE_ENCRYPTION_KEY",
+      "ACCESS_CLIENT_ID",
+      "ACCESS_CLIENT_SECRET",
+      "ACCESS_AUTHORIZATION_URL",
+      "ACCESS_TOKEN_URL",
+      "ACCESS_JWKS_URL",
+      "ACCESS_ISSUER",
+      "ACCESS_AUDIENCE",
+      "ALLOWED_USER_EMAIL"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "triggers": {
+    "crons": ["17 3 * * *"]
   },
   "durable_objects": {
     "bindings": [

@@ -53,3 +53,8 @@ export interface KeyPoolStatus {
   readonly slots: readonly KeyPoolSlotStatus[];
   readonly lease: KeyPoolLeaseStatus | null;
 }
+
+export interface PendingTestOutcome {
+  readonly slotId: SlotId;
+  readonly category: WindFailureCategory;
+}

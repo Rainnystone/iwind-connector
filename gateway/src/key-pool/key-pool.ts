@@ -1,11 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 
+import type { WindFailureCategory } from "../errors/types";
 import { initializeKeyPoolSchema } from "./schema";
 import type {
   AcquireLeaseResult,
   KeyPoolLeaseStatus,
   KeyPoolSlotStatus,
   KeyPoolStatus,
+  PendingTestOutcome,
   ReportOutcomeInput,
   SlotId,
   SlotState,
@@ -29,6 +31,11 @@ type LeaseRow = Record<string, SqlStorageValue> & {
   request_id: string;
   slot_id: string;
   expires_at: number;
+};
+
+type PendingTestOutcomeRow = Record<string, SqlStorageValue> & {
+  slot_id: string;
+  category: string;
 };
 
 export class KeyPool extends DurableObject<Cloudflare.Env> {
@@ -170,6 +177,36 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     await this.syncNextAlarm();
   }
 
+  setNextTestOutcome(input: PendingTestOutcome): Promise<void> {
+    assertSlotId(input.slotId);
+    if (!isFailureCategory(input.category)) throw new Error("INVALID_TEST_OUTCOME_CATEGORY");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM pending_test_outcome WHERE singleton = 1");
+      this.ctx.storage.sql.exec(
+        "INSERT INTO pending_test_outcome (singleton, slot_id, category) VALUES (1, ?, ?)",
+        input.slotId,
+        input.category,
+      );
+    });
+    return Promise.resolve();
+  }
+
+  consumeNextTestOutcome(slotId: SlotId): Promise<WindFailureCategory | null> {
+    assertSlotId(slotId);
+    const category = this.ctx.storage.transactionSync((): WindFailureCategory | null => {
+      const row = this.ctx.storage.sql
+        .exec<PendingTestOutcomeRow>(
+          "SELECT slot_id, category FROM pending_test_outcome WHERE singleton = 1",
+        )
+        .toArray()[0];
+      if (row === undefined || row.slot_id !== slotId) return null;
+      if (!isFailureCategory(row.category)) throw new Error("INVALID_STORED_TEST_OUTCOME");
+      this.ctx.storage.sql.exec("DELETE FROM pending_test_outcome WHERE singleton = 1");
+      return row.category;
+    });
+    return Promise.resolve(category);
+  }
+
   override async alarm(): Promise<void> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => this.activateDueSlots(now));
@@ -286,6 +323,10 @@ function isOutcomeCategory(value: unknown): value is ReportOutcomeInput["categor
     value === "response_too_large" ||
     value === "unknown"
   );
+}
+
+function isFailureCategory(value: unknown): value is WindFailureCategory {
+  return value !== "success" && isOutcomeCategory(value);
 }
 
 function asSlotId(value: string): SlotId {

@@ -93,6 +93,43 @@ describe("Wind invocation state machine", () => {
     ]);
   });
 
+  it("routes an atomic one-shot daily control through failover without calling Wind for key-01", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    pool.testOutcomes.push("daily_quota", null);
+    const caller = scriptedCaller([SUCCESS]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "daily_quota",
+    });
+    expect(pool.consumedSlots).toEqual(["key-01", "key-02"]);
+    expect(caller.slots).toEqual([SECRET_02]);
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
+      ["key-01", "daily_quota"],
+      ["key-02", "success"],
+    ]);
+  });
+
+  it("consumes a transient one-shot control once then retries the same slot against Wind", async () => {
+    const pool = scriptedPool([lease("key-01", "lease-01")]);
+    pool.testOutcomes.push("network", null);
+    const caller = scriptedCaller([SUCCESS]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toBeNull();
+    expect(pool.consumedSlots).toEqual(["key-01", "key-01"]);
+    expect(caller.slots).toEqual([SECRET_01]);
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["success"]);
+  });
+
   it("reports the initial balance category when rotation reaches key-02 and still fails", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
@@ -445,6 +482,39 @@ describe("Wind invocation state machine", () => {
     expect(results.every((result) => result.toolResult === SUCCESS)).toBe(true);
     expect(maxInFlight).toBe(1);
   });
+
+  it("keeps a pending staging control dormant in production and consumes it once in staging", async () => {
+    const stub = env.KEY_POOL.getByName("private-key-pool");
+    await stub.setNextTestOutcome({ slotId: "key-01", category: "network" });
+    const productionCaller = scriptedCaller([SUCCESS]);
+    const realEnv = {
+      KEY_POOL: env.KEY_POOL,
+      WIND_API_KEY_01: SECRET_01,
+      WIND_API_KEY_02: SECRET_02,
+      DEPLOYMENT_STAGE: "production",
+    };
+
+    const production = await invokeWindTool(
+      { ...REQUEST, requestId: "production-control" },
+      { env: realEnv, caller: productionCaller, waitUntil: consumeBackgroundPromise },
+    );
+    expect(production.toolResult).toBe(SUCCESS);
+    expect(productionCaller.slots).toEqual([SECRET_01]);
+
+    const stagingCaller = scriptedCaller([SUCCESS]);
+    const staging = await invokeWindTool(
+      { ...REQUEST, requestId: "staging-control" },
+      {
+        env: { ...realEnv, DEPLOYMENT_STAGE: "staging" },
+        caller: stagingCaller,
+        waitUntil: consumeBackgroundPromise,
+        sleep: async () => undefined,
+      },
+    );
+    expect(staging.toolResult).toBe(SUCCESS);
+    expect(stagingCaller.slots).toEqual([SECRET_01]);
+    await expect(stub.consumeNextTestOutcome("key-01")).resolves.toBeNull();
+  });
 });
 
 function dependencies(pool: ScriptedPool, caller: WindToolCaller) {
@@ -470,6 +540,8 @@ function consumeBackgroundPromise(promise: Promise<void>): void {
 interface ScriptedPool extends InvocationKeyPool {
   readonly acquisitions: string[];
   readonly reports: ReportOutcomeInput[];
+  readonly consumedSlots: SlotId[];
+  readonly testOutcomes: Array<ReportOutcomeInput["category"] | null>;
 }
 
 function scriptedPool(
@@ -479,9 +551,13 @@ function scriptedPool(
   const remaining = [...outcomes];
   const acquisitions: string[] = [];
   const reports: ReportOutcomeInput[] = [];
+  const consumedSlots: SlotId[] = [];
+  const testOutcomes: Array<ReportOutcomeInput["category"] | null> = [];
   return {
     acquisitions,
     reports,
+    consumedSlots,
+    testOutcomes,
     async acquire(requestId) {
       acquisitions.push(requestId);
       const outcome = remaining.shift();
@@ -492,6 +568,10 @@ function scriptedPool(
     async report(outcome) {
       reports.push(outcome);
       if (reports.length === rejectReportAt) throw new Error("synthetic report failure");
+    },
+    async consumeTestOutcome(slotId) {
+      consumedSlots.push(slotId);
+      return testOutcomes.shift() ?? null;
     },
   };
 }

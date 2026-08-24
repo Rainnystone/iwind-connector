@@ -21,6 +21,14 @@ const CREATE_LEASE = `
   )
 `;
 
+const CREATE_PENDING_TEST_OUTCOME = `
+  CREATE TABLE IF NOT EXISTS pending_test_outcome (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    slot_id TEXT NOT NULL,
+    category TEXT NOT NULL
+  )
+`;
+
 const SEED_SLOTS = `
   INSERT OR IGNORE INTO slots (
     slot_id,
@@ -39,5 +47,6 @@ const SEED_SLOTS = `
 export function initializeKeyPoolSchema(sql: SqlStorage): void {
   sql.exec(CREATE_SLOTS);
   sql.exec(CREATE_LEASE);
+  sql.exec(CREATE_PENDING_TEST_OUTCOME);
   sql.exec(SEED_SLOTS);
 }

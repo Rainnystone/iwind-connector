@@ -1,5 +1,7 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { getMcpAuthContext } from "agents/mcp/server";
+import { env } from "cloudflare:workers";
+import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import worker from "../src/index";
@@ -7,15 +9,23 @@ import { createMcpRequestHandler } from "../src/mcp/api-handler";
 import { createIWindMcpServer } from "../src/mcp/create-server";
 
 describe("gateway worker", () => {
-  it("keeps the default Worker surface closed until Task 7 OAuth delegates authenticated props", async () => {
-    const responsePromise = worker.fetch(new Request("https://gateway.test/mcp"));
+  it("keeps the default Worker surface OAuth-protected and other routes closed", async () => {
+    const responsePromise = worker.fetch(
+      new Request("http://localhost:8787/mcp"),
+      env,
+      createExecutionContext(),
+    );
 
     expect(responsePromise).toBeInstanceOf(Promise);
     const response = await responsePromise;
-    expect(response.status).toBe(403);
-    await expect(response.text()).resolves.toBe("Forbidden");
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain("resource_metadata=");
 
-    const other = await worker.fetch(new Request("https://gateway.test/unknown"));
+    const other = await worker.fetch(
+      new Request("http://localhost:8787/unknown"),
+      env,
+      createExecutionContext(),
+    );
     expect(other.status).toBe(404);
   });
 

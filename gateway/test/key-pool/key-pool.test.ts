@@ -80,6 +80,12 @@ describe("KeyPool SQLite Durable Object", () => {
         .exec<Record<string, SqlStorageValue> & { name: string }>("PRAGMA table_info(lease)")
         .toArray()
         .map((column) => column.name),
+      testOutcome: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { name: string }>(
+          "PRAGMA table_info(pending_test_outcome)",
+        )
+        .toArray()
+        .map((column) => column.name),
     }));
 
     expect(columns).toEqual({
@@ -94,7 +100,21 @@ describe("KeyPool SQLite Durable Object", () => {
         "updated_at",
       ],
       lease: ["singleton", "lease_id", "request_id", "slot_id", "expires_at"],
+      testOutcome: ["singleton", "slot_id", "category"],
     });
+  });
+
+  it("atomically consumes one anonymous synthetic outcome exactly once", async () => {
+    const stub = keyPool();
+
+    await stub.setNextTestOutcome({ slotId: "key-01", category: "daily_quota" });
+
+    const consumed = await Promise.all([
+      stub.consumeNextTestOutcome("key-01"),
+      stub.consumeNextTestOutcome("key-01"),
+    ]);
+    expect(consumed.sort()).toEqual(["daily_quota", null].sort());
+    await expect(stub.consumeNextTestOutcome("key-02")).resolves.toBeNull();
   });
 
   it.each([
