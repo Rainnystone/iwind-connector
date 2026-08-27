@@ -218,12 +218,17 @@ The repository has automated unit, integration, MCP/OAuth, key-rotation, seriali
 
 ChatGPT Work custom-Plugin registration, OAuth, tool discovery, and a representative query have been verified. Final Skill upload, automatic Skill invocation, and scheduled-task behavior remain account-level acceptance steps. The Grok Web adapter is provided but has not yet been verified in a real Grok account. See the [acceptance checklist](docs/acceptance-checklist.md) for the current boundary.
 
-## Before making a fork public
+## Public repository, licensing, and data access
 
-- Add the open-source license you intend to grant. This repository currently has no `LICENSE` file and therefore should not be described as licensed open source yet.
-- Run the full verification, deterministic packaging, and exact-value Secret scan against your own private key file.
-- Confirm that no private deployment record, account identifier, OAuth artifact, callback URL with temporary parameters, business response, or credential exists in Git history.
-- Review your Wind agreement before redistributing generated contract information or offering access to other people.
-- Keep the service read-only unless you intentionally design, authorize, implement, and review a different security boundary.
+This source repository is public so its implementation and operating model can be inspected. That does not make any deployed gateway a public data service, and it does not include or grant Wind data access. Every operator must use their own Cloudflare account, identity configuration, Wind entitlement, and private API keys.
 
-Wind and iWind product names belong to their respective owner. This repository is an independent integration project and does not provide, resell, or grant access to Wind data.
+This repository currently has no `LICENSE` file. Public visibility alone does not grant a general open-source reuse license, so the project should not be described as licensed open source unless and until a license is added. Choose and add an appropriate license before encouraging redistribution or third-party contributions.
+
+If you fork, deploy, or redistribute this project:
+
+- never commit credentials, OAuth artifacts, account identifiers, private deployment records, temporary callback URLs, or business responses;
+- run the full verification, deterministic packaging, and exact-value Secret scan against your own private key file;
+- review your Wind agreement before redistributing generated contract information or offering a service to other people;
+- keep the gateway read-only unless a different security boundary has been deliberately designed, authorized, implemented, and reviewed.
+
+Wind and iWind product names belong to their respective owner. This is an independent integration project and is not affiliated with or endorsed by Wind. It does not provide, resell, or grant access to Wind data.
