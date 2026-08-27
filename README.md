@@ -23,7 +23,7 @@ ChatGPT Work / Grok Web / local agent
                Cloudflare Worker gateway
                ├── OAuth and access control
                ├── 31-tool read-only manifest
-               ├── serial two-key quota failover
+               ├── serial ordered key pool (two slots by default)
                └── sanitized operations notices
                          │
                          ▼
@@ -40,8 +40,8 @@ The Cloudflare Plugin described below is a setup and maintenance assistant. It c
 | 31 read-only tools | Stock, fund, index, economic, announcement/news, and supported financial-analysis queries. |
 | Runtime-neutral Skill | The same Skill zip provides tool routing, identity validation, serial execution, result checks, and human-readable notices across supported agents. |
 | OAuth protection | Wind keys stay behind the gateway. Clients authenticate to the gateway rather than receiving Wind credentials. |
-| Quota-aware key rotation | The built-in two-key pool uses the first key until an explicitly classified quota-exhaustion signal requires the second. |
-| Strict serialization | At most one Wind request is active in the private key pool at a time. Adding a second key adds failover capacity, not parallel throughput. |
+| Quota-aware key rotation | The current release ships with two ordered slots. Its priority-based pool model can be extended to more keys without changing the MCP or Skill interfaces. |
+| Strict serialization | At most one Wind request is active in the private key pool at a time. Additional keys increase failover capacity, not parallel throughput. |
 | Fail-closed behavior | Missing tools, ambiguous security identities, unsupported markets, and failed requests stop instead of being replaced with guessed or web-sourced data. |
 | Reproducible delivery | Tests, a deterministic 11-file Skill archive, clean-room verification, and exact-value Secret scanning protect the release process. |
 
@@ -60,7 +60,7 @@ The gateway does not expose trading or write actions.
 
 ## How key rotation works
 
-The current architecture has exactly two ordered slots: `key-01` and `key-02`.
+The current release ships with exactly two ordered slots: `key-01` and `key-02`.
 
 1. Requests use `key-01` while it is available.
 2. The gateway changes slots only after an explicitly classified quota, balance, authentication, or operator state permits it.
@@ -69,6 +69,8 @@ The current architecture has exactly two ordered slots: `key-01` and `key-02`.
 5. The agent receives a sanitized notice when rotation occurred, failed, or the pool is unavailable. Key values and raw infrastructure details are never included.
 
 This is ordered quota failover, not round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
+
+The KeyPool core stores slots with explicit priorities and selects the highest-priority eligible slot, so the same serial policy can support `key-03`, `key-04`, and additional slots in the future. The current release does **not** discover extra Secrets automatically: adding a third key requires updating the slot contract, Secret binding map, deployment configuration, administration routes, tests, and documentation, then redeploying the gateway. The MCP endpoint, 31-tool manifest, OAuth flow, and Skill package do not need to change merely because the pool grows.
 
 ## Prerequisites
 
