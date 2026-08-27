@@ -1,24 +1,131 @@
 # iWind AIFin Connector
 
-This directory delivers three pieces that stay deliberately separate:
+English | [中文](README.zh-CN.md)
 
-- `skill/` is the runtime-neutral, read-only model instruction tree.
-- `gateway/` is the Cloudflare OAuth MCP gateway and its deterministic tool manifest.
-- `adapters/` contains thin platform notes. Every adapter uses the same generated Skill archive and the same OAuth MCP endpoint concept.
+A self-hosted, read-only bridge between Wind financial-data MCP services and AI agents such as ChatGPT Work, Grok Web, Codex, and other MCP-capable clients.
 
-The generated Skill artifact is `dist/iwind-aifin-connector-skill.zip`. It contains only `SKILL.md`, `references/*.md`, and `evals/*.json` under the fixed `iwind-aifin-connector/` root. Platform metadata such as `agents/openai.yaml` is not part of the core package.
+This repository is not a hosted data service and does not include Wind access. You bring your own Wind entitlement and API keys, deploy the gateway to your own Cloudflare account, and connect your agent to the resulting OAuth MCP endpoint.
 
-## Route by task
+## Why this project exists
 
-- Start with [installation](docs/installation.md) to verify, package, install locally, or prepare an approved Cloudflare deployment.
-- Use [operations](docs/operations.md) to replace, add, disable, or restore a Key, or to refresh the upstream schema snapshot.
-- Use [troubleshooting](docs/troubleshooting.md) when a stable gateway, Wind, or OAuth code appears.
-- Read [security](docs/security.md) before handling credentials, logs, archives, Access configuration, or deployment.
-- Choose the thin adapter for [ChatGPT Work](adapters/chatgpt-work/README.md), [Grok Web](adapters/grok-web/README.md), or a [local MCP client](adapters/local/README.md).
+Wind exposes useful financial data through multiple MCP services. Configuring every service and every API key separately in every agent is difficult to maintain, especially when a key reaches its quota.
 
-## Local verification
+iWind AIFin Connector provides one stable, OAuth-protected MCP endpoint and one runtime-neutral Skill:
 
-With the repository's declared Node version and installed lockfile dependencies:
+```text
+ChatGPT Work / Grok Web / local agent
+              │
+              ├── Skill: intent routing, data-quality checks, fail-closed rules
+              │
+              └── OAuth MCP connection
+                         │
+                         ▼
+               Cloudflare Worker gateway
+               ├── OAuth and access control
+               ├── 31-tool read-only manifest
+               ├── serial two-key quota failover
+               └── sanitized operations notices
+                         │
+                         ▼
+                  Six Wind MCP services
+```
+
+The Cloudflare Plugin described below is a setup and maintenance assistant. It can help an agent create or inspect Cloudflare resources, but it is not part of the production Wind-query data path.
+
+## What it can do
+
+| Capability | What it means |
+| --- | --- |
+| One MCP endpoint | Clients connect to one deployed `{PUBLIC_ORIGIN}/mcp` instead of six Wind endpoints. |
+| 31 read-only tools | Stock, fund, index, economic, announcement/news, and supported financial-analysis queries. |
+| Runtime-neutral Skill | The same Skill zip provides tool routing, identity validation, serial execution, result checks, and human-readable notices across supported agents. |
+| OAuth protection | Wind keys stay behind the gateway. Clients authenticate to the gateway rather than receiving Wind credentials. |
+| Quota-aware key rotation | The built-in two-key pool uses the first key until an explicitly classified quota-exhaustion signal requires the second. |
+| Strict serialization | At most one Wind request is active in the private key pool at a time. Adding a second key adds failover capacity, not parallel throughput. |
+| Fail-closed behavior | Missing tools, ambiguous security identities, unsupported markets, and failed requests stop instead of being replaced with guessed or web-sourced data. |
+| Reproducible delivery | Tests, a deterministic 11-file Skill archive, clean-room verification, and exact-value Secret scanning protect the release process. |
+
+### Integrated Wind domains
+
+| Domain | Tools | Typical use |
+| --- | ---: | --- |
+| Stocks | 10 | Identity, snapshots, minute data, K-lines, fundamentals, holders, events, technicals, screening, and risk. |
+| Funds and ETFs | 10 | Identity, prices, NAV, holdings, holders, managers, size, financials, and performance. |
+| Indexes | 6 | Identity, snapshots, point series, K-lines, valuation, and technical indicators. |
+| Economic data | 2 | Macroeconomic, industry, and foreign-exchange series. |
+| Financial documents | 2 | Listed-company announcements and financial news. |
+| Analytics | 1 | Supported custom financial calculations that predefined tools cannot express. |
+
+The gateway does not expose trading or write actions.
+
+## How key rotation works
+
+The current architecture has exactly two ordered slots: `key-01` and `key-02`.
+
+1. Requests use `key-01` while it is available.
+2. The gateway changes slots only after an explicitly classified quota, balance, authentication, or operator state permits it.
+3. Daily quota exhaustion can move subsequent work to `key-02`.
+4. Rate limits, concurrency errors, timeouts, network failures, upstream 5xx responses, and unknown errors do not burn through the pool.
+5. The agent receives a sanitized notice when rotation occurred, failed, or the pool is unavailable. Key values and raw infrastructure details are never included.
+
+This is ordered quota failover, not round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
+
+## Prerequisites
+
+You need:
+
+- A Wind AIFin account or entitlement that can use the integrated MCP services.
+- Two Wind API keys for the repository's current two-slot pool. The keys must never be committed to this repository.
+- A Cloudflare account with Workers, KV, Durable Objects, Cron Triggers, and an approved Access/OIDC application.
+- Git, npm, and Node.js `>=24.13.1`.
+- An MCP-capable agent or client for using the deployed service.
+
+Cloudflare, Wind, identity-provider, and AI-platform charges or limits are controlled by those services and are not included with this repository.
+
+## Recommended: install the Cloudflare Plugin first
+
+If you want ChatGPT or Codex to help provision and maintain the Cloudflare resources, install the official Cloudflare Plugin before starting deployment:
+
+1. Open the [OpenAI Plugin directory](https://developers.openai.com/plugins), search for **Cloudflare**, install it, and complete Cloudflare OAuth.
+2. Review the requested Cloudflare permissions before approving them.
+3. Ask the agent to read this repository's [installation runbook](docs/installation.md) and [security boundary](docs/security.md) before it changes any resource.
+
+The reusable Cloudflare Skills are also published in the Apache-2.0 licensed [cloudflare/skills](https://github.com/cloudflare/skills) repository:
+
+```bash
+npx skills add https://github.com/cloudflare/skills
+```
+
+The OpenAI-distributed package structure is visible in [openai/plugins › cloudflare](https://github.com/openai/plugins/tree/main/plugins/cloudflare). These open repositories contain the Plugin/Skill instructions and connection packaging. The hosted Cloudflare API MCP service they connect to is a separate remote service; do not assume its server implementation is included in either repository.
+
+Installing this Plugin is recommended for agent-guided setup, but the deployed iWind gateway does not depend on the Plugin at runtime. A qualified operator can follow the Wrangler runbook directly.
+
+## Quick start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Rainnystone/iwind-connector.git
+cd iwind-connector
+npm ci
+```
+
+### 2. Prepare private Wind keys
+
+Create a private env file outside the repository. This project's local convention is `../.secrets/iwind.keys.env`:
+
+```dotenv
+WIND_API_KEY_01=replace-with-your-first-key
+WIND_API_KEY_02=replace-with-your-second-key
+```
+
+Restrict the file to its owner. Do not paste real values into source files, Markdown, chat messages, screenshots, command arguments, or deployment JSON.
+
+Cloudflare deployment also requires the Secret binding names listed in `gateway/wrangler.jsonc` under `secrets.required`. Supply their values through approved protected input; never replace the checked-in safe sentinels with production values.
+
+### 3. Verify the checkout
+
+Run from the repository root:
 
 ```bash
 npm test
@@ -26,8 +133,95 @@ npm run typecheck
 npm run lint
 npm run contract:verify
 npm run build
+```
+
+`npm run build` is a Wrangler dry run; it does not deploy. It may clear the shared `dist/` directory, so always package the Skill after the build:
+
+```bash
 npm run skill:package
 npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'
 ```
 
-`build` is a Wrangler dry run. Packaging and scanning do not deploy or call Wind. The final scan reads the caller-supplied private env file only to construct exact byte matches; findings never include matched content.
+The generated archive is:
+
+```text
+dist/iwind-aifin-connector-skill.zip
+```
+
+### 4. Deploy the gateway to your Cloudflare account
+
+Follow [docs/installation.md](docs/installation.md) exactly. It explains how to:
+
+- create or select the OAuth KV namespace;
+- render a deploy-only Wrangler config without changing source sentinels;
+- supply all required Secrets through protected input;
+- review the Worker, Durable Object, KV, cron, origin, and OAuth configuration;
+- perform a dry run before the separately approved deployment;
+- verify OAuth, 31 read-only tools, one representative query, and key-pool status.
+
+If an agent is helping, a safe starter request is:
+
+> Read `README.md`, `docs/installation.md`, and `docs/security.md`. Explain the Cloudflare resources and Secret bindings I need. Do not create, modify, or deploy anything until you show me the exact plan and I approve it.
+
+Deployment mutates external infrastructure. Review the target Cloudflare account, resource names, OAuth policy, public origin, and estimated service costs before approving it.
+
+### 5. Connect an agent
+
+Use the same Skill archive and the same deployed OAuth MCP endpoint everywhere:
+
+- [ChatGPT Work](adapters/chatgpt-work/README.md): register the deployed `/mcp` URL as an OAuth custom Plugin, then upload the Skill zip as a separate item.
+- [Grok Web](adapters/grok-web/README.md): register the OAuth MCP connector and install the same Skill archive according to the current product UI.
+- [Local clients](adapters/local/README.md): install the Skill archive and adapt the provided MCP configuration example.
+
+The Skill does not install or authenticate the MCP connection, and the MCP connection does not automatically install the Skill. Cloud runtimes require both steps.
+
+### 6. Run a read-only smoke test
+
+Start with a known canonical Wind code and a simple snapshot request. Confirm that:
+
+- the client uses the iWind MCP rather than Web Search;
+- the selected tool matches the requested data type;
+- calls are serial;
+- the response preserves dates, units, nulls, and coverage;
+- ordinary success has no operations warning;
+- no credential or raw diagnostic appears in the answer.
+
+For a company name or uncertain code, the Skill should first search the identity, validate the company, canonical Wind code, and market, and only then call a property or price tool.
+
+## Operations and maintenance
+
+- [Operations](docs/operations.md): inspect the pool, replace/add/disable/restore a key, or refresh the Wind schema snapshot.
+- [Troubleshooting](docs/troubleshooting.md): interpret stable OAuth, gateway, key-pool, and Wind error codes.
+- [Security](docs/security.md): Secret handling, logging allowlist, package scanning, and release gates.
+- [Acceptance checklist](docs/acceptance-checklist.md): the full verified release boundary and remaining platform-specific checks.
+
+Do not change key-pool size, rotation semantics, OAuth policy, public endpoints, tool schemas, or read-only scope as an operations shortcut. Those are architecture changes and require implementation and review.
+
+## Repository layout
+
+```text
+skill/                 Runtime-neutral Agent Skill, references, and evals
+gateway/               Cloudflare Worker OAuth MCP gateway
+adapters/              ChatGPT Work, Grok Web, and local installation notes
+scripts/               Packaging, verification, Secret scanning, and deploy rendering
+docs/                  Installation, operations, security, troubleshooting, and acceptance
+dist/                  Generated and ignored release artifacts
+```
+
+The Skill package contains only `SKILL.md`, `references/*.md`, and `evals/*.json` under a fixed `iwind-aifin-connector/` root. It contains no endpoint, Wind key, OAuth credential, gateway code, platform metadata, or copied tool schema.
+
+## Verification status
+
+The repository has automated unit, integration, MCP/OAuth, key-rotation, serialization, packaging, Secret-scan, and dry-run build coverage. The production MCP path has been verified with 31 unique read-only tools and representative serial queries.
+
+ChatGPT Work custom-Plugin registration, OAuth, tool discovery, and a representative query have been verified. Final Skill upload, automatic Skill invocation, and scheduled-task behavior remain account-level acceptance steps. The Grok Web adapter is provided but has not yet been verified in a real Grok account. See the [acceptance checklist](docs/acceptance-checklist.md) for the current boundary.
+
+## Before making a fork public
+
+- Add the open-source license you intend to grant. This repository currently has no `LICENSE` file and therefore should not be described as licensed open source yet.
+- Run the full verification, deterministic packaging, and exact-value Secret scan against your own private key file.
+- Confirm that no private deployment record, account identifier, OAuth artifact, callback URL with temporary parameters, business response, or credential exists in Git history.
+- Review your Wind agreement before redistributing generated contract information or offering access to other people.
+- Keep the service read-only unless you intentionally design, authorize, implement, and review a different security boundary.
+
+Wind and iWind product names belong to their respective owner. This repository is an independent integration project and does not provide, resell, or grant access to Wind data.
