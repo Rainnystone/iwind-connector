@@ -17,7 +17,8 @@ describe("runtime-neutral release acceptance contract", () => {
       expect(source).toContain("{PUBLIC_ORIGIN}/mcp");
       expect(source).not.toMatch(/WIND_API_KEY_|mcp\.wind|\/vserver_/iu);
     }
-    expect(sources[0]).toMatch(/not[^\n]+tested[^\n]+ChatGPT Work account/iu);
+    expect(sources[0]).toMatch(/personal Pro[^\n]+verified/iu);
+    expect(sources[0]).toMatch(/Skill upload[^\n]+not yet verified/iu);
     expect(sources[1]).toMatch(/not[^\n]+tested[^\n]+Grok Web account/iu);
   });
 
@@ -48,12 +49,14 @@ describe("runtime-neutral release acceptance contract", () => {
       "Production cutover",
       "Production security",
       "Final full gate",
+      "ChatGPT Work cloud follow-up",
       "Unverified external boundaries",
     ]) {
       expect(checklist).toContain(`## ${heading}`);
     }
     expect(checklist).not.toMatch(/ak_[A-Za-z0-9]+|Bearer\s+[A-Za-z0-9._~-]{12,}|@[^\s]+\.[A-Za-z]{2,}/u);
-    expect(checklist).toMatch(/ChatGPT Work[^\n]+not tested/iu);
+    expect(checklist).toMatch(/ChatGPT Work[^\n]+Plugin[^\n]+verified/iu);
+    expect(checklist).toMatch(/Skill upload[^\n]+not yet verified/iu);
     expect(checklist).toMatch(/Grok Web[^\n]+not tested/iu);
   });
 });

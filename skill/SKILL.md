@@ -11,9 +11,13 @@ Use the Skill for read-only data about supported mainland China, Hong Kong, and 
 
 High-frequency trading, including strategy design or operation, and other trading or write actions, crypto assets, Taiwan, Japan, Korea, or Europe equities, futures order books, and any service absent from the manifest are out of scope. For anything out of scope, say so; neither Web Search nor analytics is a substitute.
 
+## Required tool provider
+
+Use the connected `iWind AIFin Connector` read-only MCP tool provider. Before any call, confirm that the selected domain reference's required tool is available. If it is unavailable, stop and ask the user to enable and authorize the provider. Web Search, generic analytics, and inferred values are not substitutes for Wind data.
+
 ## Workflow
 
-1. Resolve the entity and market. Clarify any material metric, adjustment, frequency, currency, or reporting-period ambiguity. Convert every relative time expression to exact dates before calling a tool. This step is complete when the request has one checkable identity, scope, date range, and metric interpretation.
+1. Resolve the entity and market. A company name without a validated Wind code, or an ambiguous or non-canonical code, requires identity resolution before any property call. Clarify any material metric, adjustment, frequency, currency, or reporting-period ambiguity. Convert every relative time expression to exact dates before calling a tool. This step is complete when the request has one checkable identity, scope, date range, and metric interpretation.
 2. Read only the applicable domain reference; if the request genuinely spans domains, add only the references required for those branches:
    - For stock identity, screening, prices, fundamentals, holders, events, technicals, or risk, read [stock](references/stock.md).
    - For fund products, managers, holders, holdings, financials, performance, net asset value, or exchange prices, read [fund](references/fund.md).
@@ -21,7 +25,7 @@ High-frequency trading, including strategy design or operation, and other tradin
    - For macroeconomic, industry, or foreign-exchange series, read [economic](references/economic.md).
    - For official company announcements or financial news, read [financial-docs](references/financial-docs.md).
    - For a supported custom financial calculation that no predefined tool can express, read [analytics](references/analytics.md).
-3. Choose the least sufficient native tool sequence. A known entity skips discovery; a filter for unknown entities starts with the domain search tool. This step is complete when every selected tool contributes a required result and no predefined tool was replaced by a generic calculation.
+3. Choose the least sufficient native tool sequence. A validated canonical identity skips discovery; an unresolved name or code starts with the domain search tool. This step is complete when every selected tool contributes a required result and no predefined tool was replaced by a generic calculation.
 4. Call tools strictly one at a time: one tool call completes before the next begins. Carry forward only validated outputs needed by the following call.
 5. Check the result's date, unit, magnitude, nulls, row count, truncation/completeness, and requested coverage. Treat a non-trading-day empty series as empty only when the tool completed successfully and its date semantics explain it.
 6. Inspect the final `IWIND_OPS_NOTICE_V1` block. A failure is not empty data and never supports a data claim.

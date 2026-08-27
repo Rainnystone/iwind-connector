@@ -1,11 +1,10 @@
 # ChatGPT Work adapter
 
-This is a thin installation note, not a platform-specific Skill fork. Its complete contract is:
+This is a thin installation note, not a platform-specific Skill fork. ChatGPT Work installs the MCP provider and the Skill as two separate items:
 
-1. Generate and upload the same [`dist/iwind-aifin-connector-skill.zip`](../../dist/iwind-aifin-connector-skill.zip) used by every adapter.
-2. Register the same OAuth MCP endpoint concept: `{PUBLIC_ORIGIN}/mcp`.
-3. Complete the OAuth authorization and consent flow for the approved identity.
+1. In Plugins developer mode, create `iWind AIFin Connector` with connection type **Server URL**, set the production value of `{PUBLIC_ORIGIN}/mcp` as the server URL, and select **OAuth**. Keep the automatically discovered OAuth settings, acknowledge the custom-MCP warning, create the Plugin, and complete consent for the approved identity.
+2. Generate and upload the same [`dist/iwind-aifin-connector-skill.zip`](../../dist/iwind-aifin-connector-skill.zip) used by every adapter. The Skill supplies routing and fail-closed behavior; it does not install or authenticate the Plugin.
 
-Use ChatGPT Work's current product documentation for the UI route and field labels. Do not alter the archive, add `agents/openai.yaml`, paste credentials into configuration fields, or substitute an upstream Wind URL for the gateway endpoint.
+On 2026-08-27, the personal Pro developer-mode Plugin registration, OAuth consent, discovery of exactly 31 read-only tools, and one representative serial stock call were verified. Skill upload, automatic Skill invocation, combined Skill-plus-Plugin behavior after upload, and scheduled-task behavior are not yet verified and remain operator acceptance items.
 
-This engineering thread has **not** tested these steps in a ChatGPT Work account. The platform UI, upload acceptance, registration flow, and authorization completion remain an operator verification item. The shared preflight is in [installation](../../docs/installation.md).
+Do not alter the archive, add `agents/openai.yaml`, paste credentials into configuration fields, override discovered OAuth settings, or substitute an upstream Wind URL for the gateway endpoint. The shared preflight is in [installation](../../docs/installation.md).

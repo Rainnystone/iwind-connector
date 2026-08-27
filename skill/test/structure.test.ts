@@ -79,8 +79,29 @@ describe("runtime-neutral Skill structure", () => {
     expect(joined).not.toMatch(/https?:\/\//i);
     expect(joined).not.toMatch(/WIND_API_KEY_\d+|\.secrets(?:\/|\b)|mcp\.wind|\/vserver_/i);
     expect(joined).not.toMatch(/(?:^|\/)agents\/|openai\.yaml|\.claude\/|\.codex\//i);
+    expect(joined).not.toMatch(/plugin_asdk_app/i);
     expect(joined).not.toMatch(/```(?:bash|sh|python|javascript|typescript|json)/i);
     expect(joined).not.toMatch(/inputSchema|\"properties\"\s*:|\"required\"\s*:|\$schema/i);
+  });
+
+  it("fails closed when the required iWind MCP provider or domain tool is unavailable", async () => {
+    const source = await readFile(SKILL_PATH, "utf8");
+
+    expect(source).toMatch(/## Required tool provider/i);
+    expect(source).toMatch(/connected[^\n]+iWind AIFin Connector[^\n]+read-only[^\n]+MCP/i);
+    expect(source).toMatch(/before[^\n]+call[^\n]+selected domain reference[^\n]+tool[^\n]+available/i);
+    expect(source).toMatch(/unavailable[^\n]+stop[^\n]+enable[^\n]+authorize/i);
+    expect(source).toMatch(/Web Search[^\n]+generic analytics[^\n]+inferred (?:data|values)[^\n]+not[^\n]+substitute/i);
+  });
+
+  it("resolves ambiguous stock identities before calling a property tool", async () => {
+    const source = await readFile(SKILL_PATH, "utf8");
+    const stock = await readFile(path.join(SKILL_ROOT, "references", "stock.md"), "utf8");
+
+    expect(source).toMatch(/company name[^\n]+without[^\n]+validated Wind code[^\n]+ambiguous[^\n]+non-canonical code/i);
+    expect(stock).toMatch(/search_stocks[^\n]+company name[^\n]+non-canonical code/i);
+    expect(stock).toMatch(/get_stock_basicinfo[^\n]+validate[^\n]+before[^\n]+property tool/i);
+    expect(stock).toMatch(/search_stocks[^\n]+do not[^\n]+guess[^\n]+exchange suffix/i);
   });
 
   it("gives a checkable shared sequence and an explicit scope gate", async () => {
