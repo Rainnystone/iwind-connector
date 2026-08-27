@@ -20,6 +20,7 @@
     "contract:probe": "tsx gateway/scripts/probe-wind.ts",
     "contract:verify": "tsx gateway/scripts/verify-manifest.ts",
     "skill:verify": "vitest run skill/test",
+    "skill:verify:package": "tsx scripts/verify-skill-package.ts",
     "skill:package": "tsx scripts/package-skill.ts",
     "secret:scan": "tsx scripts/secret-scan.ts",
     "deploy:render": "tsx scripts/render-deploy-config.ts"

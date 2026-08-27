@@ -97,6 +97,32 @@ describe("authorization and explicit consent flow", () => {
     expect(replay.status).toBe(400);
   });
 
+  it.each([
+    "https://client.example.test/callback",
+    "http://127.0.0.1:43123/callback",
+  ])(
+    "pins consent form-action to self plus the exact validated redirect origin for %s",
+    async (redirectUri) => {
+      const fixture = authFixture({ ...AUTH_REQUEST, redirectUri });
+      const { consent } = await reachConsent(fixture);
+      const redirectOrigin = new URL(redirectUri).origin;
+      const csp = consent.headers.get("content-security-policy");
+
+      expect(csp).toBe(
+        `default-src 'none'; style-src 'self'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'; base-uri 'none'`,
+      );
+      expect(csp).not.toContain("*");
+      const formActionSources = csp
+        ?.split(";")
+        .find((directive) => directive.trim().startsWith("form-action "))
+        ?.trim()
+        .split(/\s+/u)
+        .slice(1);
+      expect(formActionSources).not.toContain("https:");
+      expect(csp).not.toContain("https://unvalidated.example.test");
+    },
+  );
+
   it("calls completeAuthorization only after matching CSRF and explicit approve", async () => {
     const fixture = authFixture();
     const { consent, csrf } = await reachConsent(fixture);
@@ -220,7 +246,7 @@ async function reachConsent(fixture: ReturnType<typeof authFixture>) {
   return { consent, csrf };
 }
 
-function authFixture() {
+function authFixture(authRequest: AuthRequest = AUTH_REQUEST) {
   const markers = new Set<string>();
   const completeAuthorization = vi.fn(async () => ({
     redirectTo: "https://client.example.test/approved",
@@ -240,8 +266,8 @@ function authFixture() {
       ACCESS_AUDIENCE: "access-audience",
       ALLOWED_USER_EMAIL: "allowed@example.test",
       OAUTH_PROVIDER: {
-        parseAuthRequest: async () => AUTH_REQUEST,
-        lookupClient: async () => CLIENT,
+        parseAuthRequest: async () => authRequest,
+        lookupClient: async () => ({ ...CLIENT, redirectUris: [authRequest.redirectUri] }),
         completeAuthorization,
       },
       KEY_POOL: {

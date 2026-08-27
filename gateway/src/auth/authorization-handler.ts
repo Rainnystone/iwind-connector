@@ -168,10 +168,11 @@ async function completeAccessCallback(
       env.COOKIE_ENCRYPTION_KEY,
       now,
     );
-    return htmlResponse(renderConsent(consentSession), [
-      consentCookie,
-      clearSessionCookie(ACCESS_COOKIE),
-    ]);
+    return htmlResponse(
+      renderConsent(consentSession),
+      [consentCookie, clearSessionCookie(ACCESS_COOKIE)],
+      consentSession.oauthRequest.redirectUri,
+    );
   } catch {
     return localOAuthError("Authorization callback was rejected", [
       clearSessionCookie(ACCESS_COOKIE),
@@ -326,8 +327,8 @@ function renderConsent(session: ConsentFlowSession): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Authorize iWind</title></head><body><main><h1>Authorize ${name}</h1><p>Requested access: ${scopes}</p><form method="post" action="/callback"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button type="submit" name="action" value="approve">Approve</button><button type="submit" name="action" value="deny">Deny</button></form></main></body></html>`;
 }
 
-function htmlResponse(html: string, cookies: readonly string[]): Response {
-  const headers = securityHeaders("text/html; charset=utf-8");
+function htmlResponse(html: string, cookies: readonly string[], redirectUri: string): Response {
+  const headers = securityHeaders("text/html; charset=utf-8", new URL(redirectUri).origin);
   for (const cookie of cookies) headers.append("set-cookie", cookie);
   return new Response(html, { status: 200, headers });
 }
@@ -338,10 +339,11 @@ function localOAuthError(message: string, cookies: readonly string[] = []): Resp
   return new Response(message, { status: 400, headers });
 }
 
-function securityHeaders(contentType: string): Headers {
+function securityHeaders(contentType: string, formActionOrigin?: string): Headers {
+  const formAction = formActionOrigin === undefined ? "'self'" : `'self' ${formActionOrigin}`;
   return new Headers({
     "content-type": contentType,
-    "content-security-policy": "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "content-security-policy": `default-src 'none'; style-src 'self'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`,
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
