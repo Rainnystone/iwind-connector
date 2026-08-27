@@ -51,7 +51,7 @@ Restore only after the underlying reason has been resolved: a replacement was se
 
 ## Refresh the schema snapshot
 
-This operation calls the real Wind upstreams and overwrites generated contract artifacts. Obtain human approval and use one known-good private slot. From this directory, Node can load the env file without placing values in command arguments:
+This operation calls the real Wind upstreams and overwrites generated contract artifacts. Obtain human approval and proceed only after `key-01` itself has been independently verified as known-good. The refresh probe intentionally accepts only `--slot key-01`; if `key-01` is disabled, quota-exhausted, being replaced, or otherwise uncertain, stop and restore, replace, or validate it before continuing—do not substitute `key-02`. From this directory, Node can load the env file without placing values in command arguments:
 
 ```bash
 node --env-file=../.secrets/iwind.keys.env node_modules/tsx/dist/cli.mjs gateway/scripts/probe-wind.ts --slot key-01
