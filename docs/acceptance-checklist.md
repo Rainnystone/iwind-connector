@@ -59,7 +59,7 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [x] Confirm the final archive hash equals the accepted hash above and tracked changes remain inside the Task 12 write boundary.
 - [x] Save deployment and rollback identifiers only in the private record and write the sanitized SDD report.
 - [x] Commit the authorized tracked changes and confirm a clean tracked worktree.
-- [ ] Complete the Task 12 combined independent review before declaring the workstream final complete.
+- [x] Complete the Task 12 combined independent review before declaring the workstream final complete.
 
 ## Unverified external boundaries
 
