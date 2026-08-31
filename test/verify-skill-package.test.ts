@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -50,5 +50,26 @@ describe("clean-room Skill package verification", () => {
     expect(verification.stdout).toMatch(/^PACKAGE_VERIFY_OK files=11 sha256=[a-f0-9]{64}\n$/u);
     const skill = await readFile(path.join(cleanRoom, "iwind-aifin-connector", "SKILL.md"), "utf8");
     expect(skill).toContain("# iWind AIFin Connector");
+  });
+
+  it("creates a temporary clean room when only the archive is supplied", async () => {
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "iwind-skill-archive-fixture-"));
+    temporaryRoots.push(fixtureRoot);
+    const archive = path.join(fixtureRoot, "skill.zip");
+    const entries: Zippable = {};
+    for (const relative of PACKAGE_FILES) {
+      entries[`iwind-aifin-connector/${relative}`] = await readFile(path.join(ROOT, "skill", relative));
+    }
+    await writeFile(archive, zipSync(entries));
+
+    const verification = spawnSync(
+      process.execPath,
+      [TSX, VERIFY_SCRIPT, "--archive", archive],
+      { cwd: fixtureRoot, encoding: "utf8" },
+    );
+
+    expect(verification).toMatchObject({ status: 0, stderr: "" });
+    expect(verification.stdout).toMatch(/^PACKAGE_VERIFY_OK files=11 sha256=[a-f0-9]{64}\n$/u);
+    expect(await readdir(fixtureRoot)).toEqual(["skill.zip"]);
   });
 });

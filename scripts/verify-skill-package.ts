@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { unzipSync } from "fflate";
@@ -19,10 +20,11 @@ const EXPECTED_ENTRIES = [
   `${FIXED_ROOT}/references/stock.md`,
 ] as const;
 
-type Inputs = Readonly<{ archive: string; extractTo: string }>;
+type Inputs = Readonly<{ archive: string; extractTo: string | null }>;
+type VerificationInputs = Readonly<{ archive: string; extractTo: string }>;
 
 function parseArgs(args: ReadonlyArray<string>): Inputs {
-  if (args.length !== 4) throw new Error("PACKAGE_VERIFY_INVALID");
+  if (args.length !== 2 && args.length !== 4) throw new Error("PACKAGE_VERIFY_INVALID");
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
@@ -38,8 +40,13 @@ function parseArgs(args: ReadonlyArray<string>): Inputs {
   }
   const archive = values.get("--archive");
   const extractTo = values.get("--extract-to");
-  if (archive === undefined || extractTo === undefined) throw new Error("PACKAGE_VERIFY_INVALID");
-  return { archive: path.resolve(archive), extractTo: path.resolve(extractTo) };
+  if (archive === undefined || (args.length === 4 && extractTo === undefined)) {
+    throw new Error("PACKAGE_VERIFY_INVALID");
+  }
+  return {
+    archive: path.resolve(archive),
+    extractTo: extractTo === undefined ? null : path.resolve(extractTo),
+  };
 }
 
 function sortedUtf8(values: ReadonlyArray<string>): string[] {
@@ -67,7 +74,7 @@ function assertSafeText(entry: string, source: string): void {
   }
 }
 
-async function verify(inputs: Inputs): Promise<void> {
+async function verify(inputs: VerificationInputs): Promise<void> {
   if ((await readdir(inputs.extractTo)).length !== 0) throw new Error("PACKAGE_VERIFY_INVALID");
   const archiveBytes = await readFile(inputs.archive);
   const archive = unzipSync(archiveBytes);
@@ -97,8 +104,21 @@ async function verify(inputs: Inputs): Promise<void> {
   process.stdout.write(`PACKAGE_VERIFY_OK files=${names.length} sha256=${hash}\n`);
 }
 
+async function run(inputs: Inputs): Promise<void> {
+  if (inputs.extractTo !== null) {
+    await verify({ archive: inputs.archive, extractTo: inputs.extractTo });
+    return;
+  }
+  const cleanRoom = await mkdtemp(path.join(os.tmpdir(), "iwind-skill-clean-room-"));
+  try {
+    await verify({ archive: inputs.archive, extractTo: cleanRoom });
+  } finally {
+    await rm(cleanRoom, { recursive: true });
+  }
+}
+
 try {
-  await verify(parseArgs(process.argv.slice(2)));
+  await run(parseArgs(process.argv.slice(2)));
 } catch {
   process.stderr.write("PACKAGE_VERIFY_INVALID\n");
   process.exitCode = 1;
