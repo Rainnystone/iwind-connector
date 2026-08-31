@@ -4,10 +4,7 @@ import { reset } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { invokeWindTool } from "../../src/invocation/invoke";
-import {
-  WIND_SECRET_SLOT_CONTRACT,
-  resolveWindSecret,
-} from "../../src/invocation/resolve-secret";
+import { resolveWindSecret } from "../../src/invocation/resolve-secret";
 import type {
   InvocationKeyPool,
   InvocationRequest,
@@ -17,6 +14,7 @@ import { createWindToolCaller, WindCallFailure } from "../../src/upstream/call-t
 import { MAX_ERROR_ENVELOPE_BYTES } from "../../src/upstream/result-limit";
 import { emitLogEvent } from "../../src/logging/event";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../../src/key-pool/types";
+import { KEY_SLOT_DEFINITIONS } from "../../src/key-pool/slots";
 
 const NOW = 1_700_000_000_000;
 const SECRET_01 = "unit-secret-one";
@@ -39,15 +37,21 @@ afterEach(async () => {
 });
 
 describe("Wind invocation state machine", () => {
-  it("keeps secret resolution exhaustive over the compile-time SlotId contract", () => {
+  it("resolves every manifest slot through its declared Secret binding", () => {
     const invocationEnv = dependencies(scriptedPool([]), scriptedCaller([])).env;
 
-    expect(Object.keys(WIND_SECRET_SLOT_CONTRACT).sort()).toEqual(["key-01", "key-02"]);
-    expect(resolveWindSecret(invocationEnv, "key-01")).toBe(SECRET_01);
-    expect(resolveWindSecret(invocationEnv, "key-02")).toBe(SECRET_02);
+    expect(
+      KEY_SLOT_DEFINITIONS.map((definition) => [
+        definition.slotId,
+        resolveWindSecret(invocationEnv, definition.slotId),
+      ]),
+    ).toEqual([
+      ["key-01", SECRET_01],
+      ["key-02", SECRET_02],
+    ]);
     expect(() =>
       Reflect.apply(resolveWindSecret, undefined, [invocationEnv, "future-slot"]),
-    ).toThrow("WIND_SECRET_SLOT_UNKNOWN");
+    ).toThrow("UNKNOWN_SLOT");
   });
 
   it("preserves the successful CallToolResult by reference and keeps key-01 active", async () => {
@@ -90,6 +94,10 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
       ["key-01", "daily_quota"],
       ["key-02", "success"],
+    ]);
+    expect(pool.acquisitions).toEqual([
+      { requestId: REQUEST.requestId, attemptedSlotIds: [] },
+      { requestId: REQUEST.requestId, attemptedSlotIds: ["key-01"] },
     ]);
   });
 
@@ -538,7 +546,10 @@ function consumeBackgroundPromise(promise: Promise<void>): void {
 }
 
 interface ScriptedPool extends InvocationKeyPool {
-  readonly acquisitions: string[];
+  readonly acquisitions: Array<{
+    readonly requestId: string;
+    readonly attemptedSlotIds: readonly SlotId[];
+  }>;
   readonly reports: ReportOutcomeInput[];
   readonly consumedSlots: SlotId[];
   readonly testOutcomes: Array<ReportOutcomeInput["category"] | null>;
@@ -549,7 +560,10 @@ function scriptedPool(
   rejectReportAt: number | null = null,
 ): ScriptedPool {
   const remaining = [...outcomes];
-  const acquisitions: string[] = [];
+  const acquisitions: Array<{
+    readonly requestId: string;
+    readonly attemptedSlotIds: readonly SlotId[];
+  }> = [];
   const reports: ReportOutcomeInput[] = [];
   const consumedSlots: SlotId[] = [];
   const testOutcomes: Array<ReportOutcomeInput["category"] | null> = [];
@@ -558,8 +572,8 @@ function scriptedPool(
     reports,
     consumedSlots,
     testOutcomes,
-    async acquire(requestId) {
-      acquisitions.push(requestId);
+    async acquire(requestId, attemptedSlotIds: readonly SlotId[] = []) {
+      acquisitions.push({ requestId, attemptedSlotIds: [...attemptedSlotIds] });
       const outcome = remaining.shift();
       return (
         outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null }

@@ -40,7 +40,7 @@ The Cloudflare Plugin described below is a setup and maintenance assistant. It c
 | 31 read-only tools | Stock, fund, index, economic, announcement/news, and supported financial-analysis queries. |
 | Runtime-neutral Skill | The same Skill zip provides tool routing, identity validation, serial execution, result checks, and human-readable notices across supported agents. |
 | OAuth protection | Wind keys stay behind the gateway. Clients authenticate to the gateway rather than receiving Wind credentials. |
-| Quota-aware key rotation | The current release ships with two ordered slots. Its priority-based pool model can be extended to more keys without changing the MCP or Skill interfaces. |
+| Quota-aware key rotation | The current release ships with two ordered slots. A persisted cursor keeps the active slot stable and advances around an append-only N-slot ring only on approved failover events. |
 | Strict serialization | At most one Wind request is active in the private key pool at a time. Additional keys increase failover capacity, not parallel throughput. |
 | Fail-closed behavior | Missing tools, ambiguous security identities, unsupported markets, and failed requests stop instead of being replaced with guessed or web-sourced data. |
 | Reproducible delivery | Tests, a deterministic 11-file Skill archive, clean-room verification, and exact-value Secret scanning protect the release process. |
@@ -60,17 +60,18 @@ The gateway does not expose trading or write actions.
 
 ## How key rotation works
 
-The current release ships with exactly two ordered slots: `key-01` and `key-02`.
+The current release ships with exactly two ordered slots: `key-01` and `key-02`. The KeyPool persists a cursor that identifies the current slot.
 
-1. Requests use `key-01` while it is available.
-2. The gateway changes slots only after an explicitly classified quota, balance, authentication, or operator state permits it.
-3. Daily quota exhaustion can move subsequent work to `key-02`.
-4. Rate limits, concurrency errors, timeouts, network failures, upstream 5xx responses, and unknown errors do not burn through the pool.
-5. The agent receives a sanitized notice when rotation occurred, failed, or the pool is unavailable. Key values and raw infrastructure details are never included.
+1. A new pool starts on `key-01`; ordinary success keeps the cursor there, so requests do not alternate between keys.
+2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-01 → key-02 → key-01`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
+3. Each logical invocation can acquire every eligible slot at most once. If that bounded pass is exhausted, the call stops; a later independent invocation starts a new bounded pass from the persisted cursor.
+4. A trusted future `reset_at` keeps a daily-exhausted slot unavailable until its reset. When no trusted reset is supplied, the slot remains eligible for a later wrap-around probe instead of requiring a guessed reset time or manual restore.
+5. QPS cooldown, concurrency errors, timeouts, network failures, oversized responses, upstream 5xx responses, and unknown errors do not move the cursor or burn through the pool.
+6. The agent receives a sanitized notice when rotation occurred, failed, or the pool is unavailable. Key values and raw infrastructure details are never included.
 
-This is ordered quota failover, not round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
+This is event-driven ring failover, not per-request round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
 
-The KeyPool core stores slots with explicit priorities and selects the highest-priority eligible slot, so the same serial policy can support `key-03`, `key-04`, and additional slots in the future. The current release does **not** discover extra Secrets automatically: adding a third key requires updating the slot contract, Secret binding map, deployment configuration, administration routes, tests, and documentation, then redeploying the gateway. The MCP endpoint, 31-tool manifest, OAuth flow, and Skill package do not need to change merely because the pool grows.
+`gateway/src/key-pool/slots.ts` is the single slot manifest. Future expansion appends `key-03`, `key-04`, and their Secret bindings to that manifest and updates deployment configuration, tests, and documentation. Existing entries must not be renamed, reordered, or removed without a separately approved migration. The current release does **not** discover undeclared Secrets automatically. The MCP endpoint, 31-tool manifest, OAuth flow, administration URL shape, and Skill package do not need to change merely because the pool grows.
 
 ## Prerequisites
 

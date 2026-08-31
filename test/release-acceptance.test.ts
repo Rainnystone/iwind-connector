@@ -36,7 +36,7 @@ describe("runtime-neutral release acceptance contract", () => {
     expect(core).not.toMatch(/\b(?:ChatGPT|Grok)\b|openai\.yaml|agents\/openai/iu);
   });
 
-  it("ships a reusable, secret-free acceptance checklist with every Task 12 gate", async () => {
+  it("ships a reusable, secret-free acceptance checklist with historical and ring-release gates", async () => {
     const checklist = await readFile(path.join(ROOT, "docs", "acceptance-checklist.md"), "utf8");
 
     for (const heading of [
@@ -44,7 +44,9 @@ describe("runtime-neutral release acceptance contract", () => {
       "Protocol client",
       "Fresh local Agent",
       "Adapter neutrality",
-      "Staging rotation and restore",
+      "Prior-release staging rotation evidence",
+      "v0.4 persistent ring local gate",
+      "v0.4 future staging rollout",
       "Timeout and retry contract",
       "Production cutover",
       "Production security",

@@ -3,11 +3,11 @@
 ## Sources of truth
 
 - Cloudflare Secret binding names: `gateway/wrangler.jsonc` → `secrets.required`.
-- Slot-to-binding mapping: `gateway/src/invocation/resolve-secret.ts` (`key-01` → `WIND_API_KEY_01`, `key-02` → `WIND_API_KEY_02`).
+- Slot order and slot-to-binding mapping: `gateway/src/key-pool/slots.ts`.
 - Slot states and transitions: `gateway/src/key-pool/key-pool.ts`.
 - Upstream schema snapshot: `gateway/src/contracts/tool-manifest.json` plus its `.sha256`, verified by `npm run contract:verify`.
 
-The pool has exactly two serial slots. “Add a Key” means populate an unused one of those slots. A third slot changes the data model and architecture contract and requires human approval plus an implementation change; it is not an operations shortcut.
+The deployed pool currently has exactly two serial slots. A future third slot is an approved implementation and deployment change: append it to the slot manifest, add the matching Secret binding and tests, then run the schema migration. Never rename, reorder, or delete an existing manifest entry as an operations shortcut.
 
 ## Admin request contract
 
@@ -15,7 +15,7 @@ Use an approved admin HTTP client that injects `ADMIN_TOKEN` from protected inpu
 
 | Operation | Method and path | Exact JSON body | Success |
 | --- | --- | --- | --- |
-| Inspect pool | `GET {PUBLIC_ORIGIN}/admin/key-pool` | none | `200` JSON status |
+| Inspect pool | `GET {PUBLIC_ORIGIN}/admin/key-pool` | none | `200` JSON status including anonymous `currentSlotId` |
 | Disable slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-01/disable` or `key-02` | `{}` | `204` |
 | Restore slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-01/restore` or `key-02` | `{}` | `204` |
 
@@ -36,18 +36,26 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
 5. Run `npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'`. A pass proves the current exact values do not occur in delivery source or the packaged Skill.
 6. Restore the slot, then inspect status again. Restore changes state only; it does not validate the replacement. Complete the change with one approved representative read-only call and confirm the slot returns to normal operation without a failure notice.
 
-## Add a Key to the unused slot
+## Populate the declared `key-02` slot
 
 1. Inspect status and confirm the target is the unused `key-02` slot. Do not replace an active Key under the name “add.”
 2. Add `WIND_API_KEY_02` to the private env file and set the Cloudflare Secret through `npx --no-install wrangler secret put WIND_API_KEY_02 --config dist/wrangler.deploy.jsonc`.
 3. Run the exact-value Secret scan.
-4. Restore `key-02`, inspect status, and complete one approved representative read-only call. Upstream requests remain strictly serial; adding a Key adds failover capacity, not round-robin or parallel throughput.
+4. Restore `key-02`, inspect status, and complete one approved representative read-only call. Restore makes the slot eligible but does not take the cursor away from the current slot. Upstream requests remain strictly serial; adding a Key adds failover capacity, not per-request round-robin or parallel throughput.
+
+## Extend the manifest in a future release
+
+This is an engineering change, not a live operations action. Obtain human approval, then append the new slot and binding to `gateway/src/key-pool/slots.ts`; add the binding to deployment configuration; update tests and documentation; and run the add-only SQLite migration and full delivery gate. The migration accepts only a manifest whose existing entries are an exact prefix, so renaming, reordering, or deleting a deployed slot requires a separately designed migration. Do not create or deploy a new Secret as part of an unapproved documentation or code change.
 
 ## Disable or restore a Key
 
-Disable through the exact admin path and confirm `disabled_manual`. A manual disable persists across reported outcomes and has no automatic reset.
+Disable through the exact admin path and confirm `disabled_manual`. If the disabled slot is current, the cursor advances atomically to its successor. A manual disable persists across reported outcomes and has no automatic reset.
 
-Restore only after the underlying reason has been resolved: a replacement was set, balance/authentication was corrected, or a known quota reset was independently confirmed. Restore clears stored reset/cooldown/error state immediately; it does not probe Wind and must not be used to bypass uncertain quota evidence.
+Restore only after the underlying reason has been resolved: a replacement was set, or balance/authentication was corrected. Restore clears stored reset/cooldown/error state immediately and makes the slot eligible, but it does not probe Wind or steal the cursor from the current slot.
+
+An exact daily-quota event always advances the cursor. A trusted future `reset_at` keeps that slot unavailable until lazy activation or its alarm; do not restore it early. If no trusted reset is available, the slot remains eligible for a later wrap-around probe, so no guessed refresh time or manual restore is required. Each logical call tries every eligible slot at most once; after a bounded exhaustion, a later independent call begins a new pass from `currentSlotId`.
+
+QPS cooldown makes the current cursor temporarily busy and must not be bypassed by moving to another Key. Concurrency, network, timeout, oversized response, 5xx, and unknown failures release the lease without moving the cursor.
 
 ## Refresh the schema snapshot
 

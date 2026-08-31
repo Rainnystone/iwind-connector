@@ -1,4 +1,4 @@
-import type { AcquireLeaseResult } from "./types";
+import type { AcquireLeaseResult, SlotId } from "./types";
 
 const ACQUIRE_WAIT_MS = 2_000;
 const ACQUIRE_POLL_MS = 100;
@@ -8,6 +8,7 @@ type KeyPoolEnvironment = Pick<Cloudflare.Env, "KEY_POOL">;
 export async function acquireKeyPoolLease(
   env: KeyPoolEnvironment,
   requestId: string,
+  attemptedSlotIds: readonly SlotId[] = [],
 ): Promise<AcquireLeaseResult> {
   const keyPool = env.KEY_POOL.getByName("private-key-pool");
   const deadline = Date.now() + ACQUIRE_WAIT_MS;
@@ -20,7 +21,7 @@ export async function acquireKeyPoolLease(
     }
     firstAttempt = false;
 
-    const result = await keyPool.acquireLease(requestId, now);
+    const result = await keyPool.acquireLease({ requestId, attemptedSlotIds, now });
     if (result.ok || result.code === "KEY_POOL_EXHAUSTED") return result;
 
     const remainingMs = deadline - Date.now();

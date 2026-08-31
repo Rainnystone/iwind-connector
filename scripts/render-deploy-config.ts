@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { KEY_SLOT_DEFINITIONS } from "../gateway/src/key-pool/slots.js";
 import { safeAtomicWrite } from "./safe-atomic-write.js";
 
 type Inputs = Readonly<{
@@ -51,6 +52,9 @@ async function render(inputs: Inputs): Promise<void> {
   const source = JSON.parse(await readFile(SOURCE, "utf8")) as Record<string, unknown>;
   const vars = source.vars;
   const namespaces = source.kv_namespaces;
+  const secrets = source.secrets;
+  const requiredSecrets =
+    typeof secrets === "object" && secrets !== null ? Reflect.get(secrets, "required") : null;
   if (
     typeof vars !== "object" ||
     vars === null ||
@@ -58,7 +62,13 @@ async function render(inputs: Inputs): Promise<void> {
     namespaces.length !== 1 ||
     typeof namespaces[0] !== "object" ||
     namespaces[0] === null ||
-    Reflect.get(namespaces[0], "binding") !== "OAUTH_KV"
+    Reflect.get(namespaces[0], "binding") !== "OAUTH_KV" ||
+    !Array.isArray(requiredSecrets) ||
+    !requiredSecrets.every((binding): binding is string => typeof binding === "string") ||
+    !arraysEqual(
+      requiredSecrets.filter((binding) => binding.startsWith("WIND_API_KEY_")),
+      KEY_SLOT_DEFINITIONS.map(({ secretBinding }) => secretBinding),
+    )
   ) {
     throw new Error("DEPLOY_CONFIG_INVALID");
   }
@@ -77,6 +87,10 @@ async function render(inputs: Inputs): Promise<void> {
     data: `${JSON.stringify(rendered, null, 2)}\n`,
   });
   process.stdout.write("DEPLOY_CONFIG_OK dist/wrangler.deploy.jsonc\n");
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 try {

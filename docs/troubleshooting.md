@@ -5,8 +5,8 @@ Start with the stable code in the MCP result, `IWIND_OPS_NOTICE_V1`, or allowlis
 | Stable code | Meaning | Operator action |
 | --- | --- | --- |
 | `GATEWAY_BUSY` | Another serial lease is active, or a known cooldown is active. | Honor the returned retry delay when present; otherwise retry later. Inspect key-pool status if it persists. Do not rotate a Key. |
-| `KEY_POOL_EXHAUSTED` | No slot is currently eligible. | Inspect both slot states and known reset times. Replace or restore only after resolving the recorded reason; never guess a reset time. |
-| `WIND_DAILY_QUOTA` | Exact structured daily-quota evidence was classified. | The gateway exhausts that slot until a known reset and may fail over once. Confirm the `WIND_KEY_ROTATED` or `WIND_KEY_ROTATION_FAILED` notice and inspect status. |
+| `KEY_POOL_EXHAUSTED` | This invocation has tried every eligible slot once, or no slot is currently eligible. | Inspect `currentSlotId`, slot states, and trusted reset times. A later independent request may re-probe daily-quota slots that had no trusted reset; balance/auth/manual states require correction and restore. Never guess a reset time. |
+| `WIND_DAILY_QUOTA` | Exact structured daily-quota evidence was classified. | The cursor advances to the next slot. A trusted future reset keeps the affected slot unavailable until then; without one, it may be probed on a later wrap. Confirm the `WIND_KEY_ROTATED` or `WIND_KEY_ROTATION_FAILED` notice and inspect status. |
 | `WIND_BALANCE` / `WIND_AUTH` | Exact structured balance or authentication evidence was classified. | The affected slot is disabled. Correct funding or credentials, replace the binding if needed, then follow the restore runbook. |
 | `WIND_QPS` / `WIND_CONCURRENCY` | Rate or concurrency pressure, including an unstructured HTTP 429 for QPS. | The gateway retries the same slot once. Wait and reduce call frequency. These codes must not consume the next Key. |
 | `WIND_NETWORK` / `WIND_TIMEOUT` / `WIND_UPSTREAM_5XX` | Transport, timeout, or upstream service failure. | The gateway retries the same slot once. Check reachability and provider status; do not rotate Keys. |

@@ -38,13 +38,30 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [x] Complete one combined independent review of specification compliance and implementation quality; no findings remained open.
 - [ ] Skill upload, automatic invocation, combined post-upload behavior, notice rendering, and scheduled-task behavior are not yet verified.
 
-## Staging rotation and restore
+## Prior-release staging rotation evidence
 
 - [x] Confirm the validated staging version is still the sole active version at 100% before any mutation.
-- [x] Arm exactly one protected synthetic canonical daily-quota outcome on the priority slot, then run the first prompt through the local acceptance path.
+- [x] Arm exactly one protected synthetic canonical daily-quota outcome on the then-current priority slot, then run the first prompt through the local acceptance path.
 - [x] Confirm data success plus `WIND_KEY_ROTATED`, and render the canonical human sentence without exposing a Key, slot, or request identifier.
-- [x] Immediately restore the priority slot whether the call succeeds or fails, then confirm both slots are active and the priority slot is selected normally.
+- [x] Under the prior model, immediately restore that slot whether the call succeeds or fails, then confirm both slots are active and the priority slot is selected normally.
 - Natural Wind quota exhaustion was not observed; the rotation proof used the staging-only protected one-shot control.
+
+## v0.4 persistent ring local gate
+
+- [x] Confirm ordinary success keeps `currentSlotId` stable and all Wind upstream work remains strictly serial.
+- [x] Use protected synthetic daily-quota outcomes to prove `key-01 → key-02 → key-01` without manual restore.
+- [x] Confirm one invocation tries each eligible slot at most once, stops after the bounded pass, and a later independent invocation re-probes from the persisted cursor.
+- [x] Confirm a trusted future reset is skipped, an unknown-reset daily-quota slot can be probed after wrap-around, and eviction preserves the cursor.
+- [x] Confirm balance/auth/manual states remain unavailable until restore; restoring a slot does not take the cursor from the current slot.
+- [x] Confirm QPS, concurrency, network, timeout, oversized response, upstream 5xx, and unknown outcomes do not move the cursor.
+- [x] Use synthetic 1/2/3/4-slot definitions to prove ordered selection and wrap without creating or deploying a third real Key.
+
+## v0.4 future staging rollout
+
+- [ ] Obtain separate human approval before any Cloudflare upload, deployment, Secret, or production-state change.
+- [ ] On staging, use protected one-shot controls—not real quota exhaustion—to prove `key-01 → key-02 → key-01`, and inspect admin `currentSlotId` after each event.
+- [ ] Confirm both declared slot states, stable notice wire shapes, maximum upstream in-flight of one, and unchanged MCP URL, 31 tools, OAuth, and Skill behavior.
+- [ ] Obtain a separate production cutover approval only after staging evidence is accepted.
 
 ## Timeout and retry contract
 

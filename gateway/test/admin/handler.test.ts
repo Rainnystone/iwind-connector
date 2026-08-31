@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { handleAdminRequest } from "../../src/admin/handler";
 import type { WindFailureCategory } from "../../src/errors/types";
+import { KEY_SLOT_DEFINITIONS } from "../../src/key-pool/slots";
 
 const ADMIN_TOKEN = "independent-admin-token";
 const NOW = Date.UTC(2035, 7, 24);
@@ -28,6 +29,7 @@ describe("independent admin surface", () => {
     const body = await status.text();
     expect(status.status).toBe(200);
     expect(status.headers.get("cache-control")).toBe("no-store");
+    expect(body).toContain('"currentSlotId":"key-01"');
     expect(body).toContain('"slotId":"key-01"');
     expect(body).not.toContain("lease-secret");
     expect(body).not.toContain("request-secret");
@@ -52,6 +54,32 @@ describe("independent admin surface", () => {
       ["disable", "key-01", NOW],
       ["restore", "key-01", NOW + 1],
     ]);
+  });
+
+  it("accepts restore and disable routes for every manifest slot", async () => {
+    const fixture = adminEnv("staging");
+    for (const definition of KEY_SLOT_DEFINITIONS) {
+      await expect(
+        handleAdminRequest(
+          adminRequest(`/admin/key-pool/slots/${definition.slotId}/disable`, "POST", {}),
+          fixture,
+          NOW,
+        ),
+      ).resolves.toMatchObject({ status: 204 });
+      await expect(
+        handleAdminRequest(
+          adminRequest(`/admin/key-pool/slots/${definition.slotId}/restore`, "POST", {}),
+          fixture,
+          NOW + 1,
+        ),
+      ).resolves.toMatchObject({ status: 204 });
+    }
+    expect(fixture.calls).toEqual(
+      KEY_SLOT_DEFINITIONS.flatMap(({ slotId }) => [
+        ["disable", slotId, NOW],
+        ["restore", slotId, NOW + 1],
+      ]),
+    );
   });
 
   it("requires exact JSON objects and exact admin routes", async () => {
@@ -138,6 +166,7 @@ function adminEnv(stage: "local" | "staging" | "production") {
   const stub = {
     async getStatus() {
       return {
+        currentSlotId: "key-01",
         slots: [
           {
             slotId: "key-01",
