@@ -1,10 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { WindFailureCategory } from "../errors/types";
-import { isSlotId } from "./slots";
+import { nextSlotId, orderSlotRing } from "./slot-ring";
+import { isSlotId, KEY_SLOT_DEFINITIONS } from "./slots";
 import { initializeKeyPoolSchema } from "./schema";
 import type {
   AcquireLeaseResult,
+  AcquireLeaseInput,
   KeyPoolLeaseStatus,
   KeyPoolSlotStatus,
   KeyPoolStatus,
@@ -41,56 +43,72 @@ type PendingTestOutcomeRow = Record<string, SqlStorageValue> & {
   category: string;
 };
 
+type PoolStateRow = Record<string, SqlStorageValue> & {
+  cursor_slot_id: string;
+  updated_at: number;
+};
+
 export class KeyPool extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
-    initializeKeyPoolSchema(ctx.storage.sql);
+    initializeKeyPoolSchema(ctx.storage, Date.now());
   }
 
-  async acquireLease(requestId: string, now: number): Promise<AcquireLeaseResult> {
-    assertTimestamp(now);
-    if (requestId.length === 0) throw new Error("INVALID_REQUEST_ID");
+  async acquireLease(input: AcquireLeaseInput): Promise<AcquireLeaseResult> {
+    assertAcquireLeaseInput(input);
+    const attemptedSlotIds = new Set<SlotId>(input.attemptedSlotIds);
 
     const result = this.ctx.storage.transactionSync((): AcquireLeaseResult => {
-      this.activateDueSlots(now);
+      this.activateDueSlots(input.now);
       const current = this.readLease();
-      if (current !== null && current.expires_at > now) {
+      if (current !== null && current.expires_at > input.now) {
         return {
           ok: false,
           code: "GATEWAY_BUSY",
-          retryAfterMs: current.expires_at - now,
+          retryAfterMs: current.expires_at - input.now,
         };
       }
       if (current !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
 
-      const slot = this.ctx.storage.sql
-        .exec<SlotRow>(
-          "SELECT * FROM slots WHERE state IN ('active', 'cooldown') ORDER BY priority ASC LIMIT 1",
-        )
-        .toArray()[0];
+      const cursorSlotId = this.readCursor();
+      const slots = orderSlotRing(
+        this.ctx.storage.sql
+          .exec<SlotRow>("SELECT * FROM slots ORDER BY priority ASC")
+          .toArray()
+          .map((row) => ({ ...row, slotId: row.slot_id })),
+        cursorSlotId,
+      );
+      const cursorSlot = slots[0];
+      if (cursorSlot?.state === "cooldown") {
+        return {
+          ok: false,
+          code: "GATEWAY_BUSY",
+          retryAfterMs:
+            cursorSlot.cooldown_until === null
+              ? null
+              : Math.max(0, cursorSlot.cooldown_until - input.now),
+        };
+      }
+      const slot = slots.find(
+        (candidate) =>
+          candidate.state === "active" && !attemptedSlotIds.has(asSlotId(candidate.slot_id)),
+      );
       if (slot === undefined) {
         const next = this.readNextKnownReset();
         return {
           ok: false,
           code: "KEY_POOL_EXHAUSTED",
-          retryAfterMs: next === null ? null : Math.max(0, next - now),
-        };
-      }
-      if (slot.state === "cooldown") {
-        return {
-          ok: false,
-          code: "GATEWAY_BUSY",
-          retryAfterMs:
-            slot.cooldown_until === null ? null : Math.max(0, slot.cooldown_until - now),
+          retryAfterMs: next === null ? null : Math.max(0, next - input.now),
         };
       }
 
       const leaseId = crypto.randomUUID();
-      const expiresAt = now + LEASE_TTL_MS;
+      const expiresAt = input.now + LEASE_TTL_MS;
+      this.writeCursor(asSlotId(slot.slot_id), input.now);
       this.ctx.storage.sql.exec(
         "INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at) VALUES (1, ?, ?, ?, ?)",
         leaseId,
-        requestId,
+        input.requestId,
         slot.slot_id,
         expiresAt,
       );
@@ -130,6 +148,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         input.slotId,
       );
       this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
+      if (transition.advanceCursor) {
+        this.advanceCursorIfCurrent(input.slotId, input.occurredAt);
+      }
     });
 
     await this.syncNextAlarm();
@@ -137,6 +158,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
 
   getStatus(): Promise<KeyPoolStatus> {
     const status = this.ctx.storage.transactionSync((): KeyPoolStatus => ({
+      currentSlotId: this.readCursor(),
       slots: this.ctx.storage.sql
         .exec<SlotRow>("SELECT * FROM slots ORDER BY priority ASC")
         .toArray()
@@ -176,6 +198,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         now,
         slotId,
       );
+      this.advanceCursorIfCurrent(slotId, now);
     });
     await this.syncNextAlarm();
   }
@@ -260,6 +283,30 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     );
   }
 
+  private readCursor(): SlotId {
+    const row = this.ctx.storage.sql
+      .exec<PoolStateRow>(
+        "SELECT cursor_slot_id, updated_at FROM pool_state WHERE singleton = 1",
+      )
+      .one();
+    return asSlotId(row.cursor_slot_id);
+  }
+
+  private writeCursor(slotId: SlotId, now: number): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE pool_state SET cursor_slot_id = ?, updated_at = ? WHERE singleton = 1",
+      slotId,
+      now,
+    );
+  }
+
+  private advanceCursorIfCurrent(slotId: SlotId, now: number): void {
+    if (this.readCursor() !== slotId) return;
+    const next = nextSlotId(KEY_SLOT_DEFINITIONS, slotId);
+    assertSlotId(next);
+    this.writeCursor(next, now);
+  }
+
   private assertStoredSlot(slotId: SlotId): void {
     const row = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { slot_id: string }>(
@@ -316,24 +363,50 @@ function outcomeTransition(input: ReportOutcomeInput, currentState: SlotState): 
   readonly state: SlotState;
   readonly resetAt: number | null;
   readonly cooldownUntil: number | null;
+  readonly advanceCursor: boolean;
 } {
   if (currentState === "disabled_manual") {
-    return { state: "disabled_manual", resetAt: null, cooldownUntil: null };
+    return {
+      state: "disabled_manual",
+      resetAt: null,
+      cooldownUntil: null,
+      advanceCursor: false,
+    };
   }
   const resetAt = isKnownFutureReset(input.resetAt, input.occurredAt) ? input.resetAt : null;
   switch (input.category) {
     case "daily_quota":
-      return { state: "exhausted_until_reset", resetAt, cooldownUntil: null };
+      return {
+        state: resetAt === null ? "active" : "exhausted_until_reset",
+        resetAt,
+        cooldownUntil: null,
+        advanceCursor: true,
+      };
     case "balance":
-      return { state: "disabled_balance", resetAt: null, cooldownUntil: null };
+      return {
+        state: "disabled_balance",
+        resetAt: null,
+        cooldownUntil: null,
+        advanceCursor: true,
+      };
     case "auth":
-      return { state: "disabled_auth", resetAt: null, cooldownUntil: null };
+      return {
+        state: "disabled_auth",
+        resetAt: null,
+        cooldownUntil: null,
+        advanceCursor: true,
+      };
     case "qps":
       return resetAt === null
-        ? { state: "active", resetAt: null, cooldownUntil: null }
-        : { state: "cooldown", resetAt: null, cooldownUntil: resetAt };
+        ? { state: "active", resetAt: null, cooldownUntil: null, advanceCursor: false }
+        : {
+            state: "cooldown",
+            resetAt: null,
+            cooldownUntil: resetAt,
+            advanceCursor: false,
+          };
     default:
-      return { state: "active", resetAt: null, cooldownUntil: null };
+      return { state: "active", resetAt: null, cooldownUntil: null, advanceCursor: false };
   }
 }
 
@@ -343,6 +416,22 @@ function isKnownFutureReset(value: number | null, now: number): value is number 
 
 function assertTimestamp(value: number): void {
   if (!Number.isFinite(value) || value < 0) throw new Error("INVALID_TIMESTAMP");
+}
+
+function assertAcquireLeaseInput(input: AcquireLeaseInput): void {
+  if (typeof input !== "object" || input === null) throw new Error("INVALID_ACQUIRE_INPUT");
+  assertTimestamp(input.now);
+  if (typeof input.requestId !== "string" || input.requestId.length === 0) {
+    throw new Error("INVALID_REQUEST_ID");
+  }
+  if (
+    !Array.isArray(input.attemptedSlotIds) ||
+    input.attemptedSlotIds.length > KEY_SLOT_DEFINITIONS.length ||
+    input.attemptedSlotIds.some((slotId) => !isSlotId(slotId)) ||
+    new Set(input.attemptedSlotIds).size !== input.attemptedSlotIds.length
+  ) {
+    throw new Error("INVALID_ATTEMPTED_SLOTS");
+  }
 }
 
 function assertOAuthReplayMarkerInput(input: OAuthReplayMarkerInput): void {

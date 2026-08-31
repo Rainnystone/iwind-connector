@@ -3,8 +3,17 @@ import { reset } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireKeyPoolLease } from "../../src/key-pool/client";
+import type { AcquireLeaseInput, AcquireLeaseResult } from "../../src/key-pool/types";
 
 const BASE_TIME = Date.UTC(2035, 7, 24, 0, 0, 0);
+
+function acquireLease(
+  stub: { acquireLease(input: AcquireLeaseInput): Promise<AcquireLeaseResult> },
+  requestId: string,
+  now: number,
+): Promise<AcquireLeaseResult> {
+  return stub.acquireLease({ requestId, attemptedSlotIds: [], now });
+}
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -17,7 +26,7 @@ describe("KeyPool contention", () => {
 
     const results = await Promise.all(
       Array.from({ length: 24 }, (_, index) =>
-        stub.acquireLease(`concurrent-${String(index).padStart(2, "0")}`, BASE_TIME),
+        acquireLease(stub, `concurrent-${String(index).padStart(2, "0")}`, BASE_TIME),
       ),
     );
 
@@ -50,7 +59,7 @@ describe("KeyPool contention", () => {
     vi.useFakeTimers();
     vi.setSystemTime(BASE_TIME);
     const stub = env.KEY_POOL.getByName("private-key-pool");
-    await stub.acquireLease("holder", BASE_TIME);
+    await acquireLease(stub, "holder", BASE_TIME);
 
     const resultPromise = acquireKeyPoolLease(env, "waiter");
     await vi.advanceTimersByTimeAsync(2_000);
@@ -65,7 +74,7 @@ describe("KeyPool contention", () => {
   it("catches cooldown failover in the bounded client by waiting for and reacquiring key-01", async () => {
     const stub = env.KEY_POOL.getByName("private-key-pool");
     const now = Date.now();
-    const lease = await stub.acquireLease("rate-limited", now);
+    const lease = await acquireLease(stub, "rate-limited", now);
     if (!lease.ok) throw new Error("fixture-lease-not-acquired");
     await stub.reportOutcome({
       leaseId: lease.leaseId,

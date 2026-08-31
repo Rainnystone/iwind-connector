@@ -5,6 +5,7 @@ import {
   isSlotId,
   KEY_SLOT_DEFINITIONS,
 } from "../../src/key-pool/slots";
+import { nextSlotId, orderSlotRing } from "../../src/key-pool/slot-ring";
 
 describe("key slot manifest", () => {
   it("defines the current two-slot deployment contract exactly once", () => {
@@ -33,6 +34,56 @@ describe("key slot manifest", () => {
     expect(isSlotId(1)).toBe(false);
     expect(() => Reflect.apply(getKeySlotDefinition, undefined, ["key-03"])).toThrow(
       "UNKNOWN_SLOT",
+    );
+  });
+});
+
+describe("generic slot ring", () => {
+  it.each([1, 2, 3, 4])("orders and wraps a %i-slot manifest from every cursor", (size) => {
+    const definitions = Array.from({ length: size }, (_, index) => ({
+      slotId: `slot-${String(index + 1)}`,
+      priority: index + 1,
+    }));
+
+    for (let cursorIndex = 0; cursorIndex < size; cursorIndex += 1) {
+      const cursor = definitions[cursorIndex];
+      if (cursor === undefined) throw new Error("fixture-cursor-missing");
+      const expected = [
+        ...definitions.slice(cursorIndex),
+        ...definitions.slice(0, cursorIndex),
+      ].map(({ slotId }) => slotId);
+
+      expect(orderSlotRing(definitions, cursor.slotId).map(({ slotId }) => slotId)).toEqual(
+        expected,
+      );
+      expect(nextSlotId(definitions, cursor.slotId)).toBe(
+        definitions[(cursorIndex + 1) % size]?.slotId,
+      );
+    }
+  });
+
+  it("rejects an empty, duplicate, non-contiguous, or unknown-cursor ring", () => {
+    expect(() => orderSlotRing([], "slot-1")).toThrow("INVALID_SLOT_RING");
+    expect(() =>
+      orderSlotRing(
+        [
+          { slotId: "slot-1", priority: 1 },
+          { slotId: "slot-1", priority: 2 },
+        ],
+        "slot-1",
+      ),
+    ).toThrow("INVALID_SLOT_RING");
+    expect(() =>
+      orderSlotRing(
+        [
+          { slotId: "slot-1", priority: 1 },
+          { slotId: "slot-2", priority: 3 },
+        ],
+        "slot-1",
+      ),
+    ).toThrow("INVALID_SLOT_RING");
+    expect(() => orderSlotRing([{ slotId: "slot-1", priority: 1 }], "slot-2")).toThrow(
+      "UNKNOWN_CURSOR_SLOT",
     );
   });
 });

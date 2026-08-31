@@ -3,6 +3,12 @@ import type { SlotId } from "./slots";
 
 export type { SlotId } from "./slots";
 
+export interface AcquireLeaseInput {
+  readonly requestId: string;
+  readonly attemptedSlotIds: readonly SlotId[];
+  readonly now: number;
+}
+
 export type SlotState =
   | "active"
   | "exhausted_until_reset"
@@ -51,6 +57,7 @@ export interface KeyPoolLeaseStatus {
 }
 
 export interface KeyPoolStatus {
+  readonly currentSlotId: SlotId;
   readonly slots: readonly KeyPoolSlotStatus[];
   readonly lease: KeyPoolLeaseStatus | null;
 }
