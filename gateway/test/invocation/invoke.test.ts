@@ -95,6 +95,10 @@ describe("Wind invocation state machine", () => {
       ["key-01", "daily_quota"],
       ["key-02", "success"],
     ]);
+    expect(pool.acquisitions).toEqual([
+      { requestId: REQUEST.requestId, attemptedSlotIds: [] },
+      { requestId: REQUEST.requestId, attemptedSlotIds: ["key-01"] },
+    ]);
   });
 
   it("routes an atomic one-shot daily control through failover without calling Wind for key-01", async () => {
@@ -542,7 +546,10 @@ function consumeBackgroundPromise(promise: Promise<void>): void {
 }
 
 interface ScriptedPool extends InvocationKeyPool {
-  readonly acquisitions: string[];
+  readonly acquisitions: Array<{
+    readonly requestId: string;
+    readonly attemptedSlotIds: readonly SlotId[];
+  }>;
   readonly reports: ReportOutcomeInput[];
   readonly consumedSlots: SlotId[];
   readonly testOutcomes: Array<ReportOutcomeInput["category"] | null>;
@@ -553,7 +560,10 @@ function scriptedPool(
   rejectReportAt: number | null = null,
 ): ScriptedPool {
   const remaining = [...outcomes];
-  const acquisitions: string[] = [];
+  const acquisitions: Array<{
+    readonly requestId: string;
+    readonly attemptedSlotIds: readonly SlotId[];
+  }> = [];
   const reports: ReportOutcomeInput[] = [];
   const consumedSlots: SlotId[] = [];
   const testOutcomes: Array<ReportOutcomeInput["category"] | null> = [];
@@ -562,8 +572,8 @@ function scriptedPool(
     reports,
     consumedSlots,
     testOutcomes,
-    async acquire(requestId) {
-      acquisitions.push(requestId);
+    async acquire(requestId, attemptedSlotIds: readonly SlotId[] = []) {
+      acquisitions.push({ requestId, attemptedSlotIds: [...attemptedSlotIds] });
       const outcome = remaining.shift();
       return (
         outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null }

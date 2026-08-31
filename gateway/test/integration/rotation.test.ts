@@ -61,6 +61,39 @@ describe("local KeyPool integration", () => {
     expect(await currentSlotId()).toBe("key-01");
   });
 
+  it("tries each slot once per invocation, stops, then re-probes from the persisted cursor", async () => {
+    const exhaustedCaller = trackedCaller([
+      structuredFailure("DAILY_LIMIT_ERROR"),
+      structuredFailure("DAILY_LIMIT_ERROR"),
+    ]);
+
+    const exhausted = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-bounded-exhaustion" },
+      dependencies(exhaustedCaller),
+    );
+
+    expect(exhausted.toolResult.isError).toBe(true);
+    expect(exhausted.notice).toMatchObject({
+      code: "WIND_KEY_ROTATION_FAILED",
+      initialCategory: "daily_quota",
+      finalStatus: "failed",
+    });
+    expect(exhaustedCaller.slots).toEqual(["key-01", "key-02"]);
+    expect(exhaustedCaller.maxInFlight).toBe(1);
+    expect(await currentSlotId()).toBe("key-01");
+
+    const nextCaller = trackedCaller([SUCCESS]);
+    const next = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-next-invocation" },
+      dependencies(nextCaller),
+    );
+
+    expect(next.toolResult).toBe(SUCCESS);
+    expect(next.notice).toBeNull();
+    expect(nextCaller.slots).toEqual(["key-01"]);
+    expect(nextCaller.maxInFlight).toBe(1);
+  });
+
   it.each([
     ["qps", qpsFailure()],
     ["concurrency", structuredFailure("CONCURRENCY_LIMIT_ERROR")],
@@ -87,6 +120,7 @@ describe("local KeyPool integration", () => {
       expect(caller.slots).toEqual(["key-01"]);
       expect(caller.maxInFlight).toBe(1);
       expect(await slotState("key-02")).toBe("active");
+      expect(await currentSlotId()).toBe("key-01");
     },
   );
 
@@ -106,6 +140,27 @@ describe("local KeyPool integration", () => {
     });
     expect(caller.slots).toEqual([]);
     expect(await slotState("key-02")).toBe("active");
+    expect(await currentSlotId()).toBe("key-01");
+  });
+
+  it("stops an oversized-response outcome without moving the cursor", async () => {
+    await setNextOutcome("key-01", "response_too_large");
+    const caller = trackedCaller([]);
+
+    const result = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-response-too-large" },
+      dependencies(caller),
+    );
+
+    expect(result.toolResult.isError).toBe(true);
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "response_too_large",
+      finalStatus: "failed",
+    });
+    expect(caller.slots).toEqual([]);
+    expect(await slotState("key-02")).toBe("active");
+    expect(await currentSlotId()).toBe("key-01");
   });
 
   it("serializes overlapping logical requests through the one real coordination atom", async () => {

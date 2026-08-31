@@ -106,7 +106,7 @@ export async function invokeWindTool(
 
   try {
     while (true) {
-      const acquisition = await keyPool.acquire(request.requestId);
+      const acquisition = await keyPool.acquire(request.requestId, [...attemptedSlots]);
       if (!acquisition.ok) {
         const notice = admissionNotice(
           request.requestId,
@@ -379,7 +379,8 @@ function keyPoolFromEnvironment(
 ): InvocationKeyPool {
   const stub = env.KEY_POOL.getByName("private-key-pool");
   return {
-    acquire: (requestId) => acquireKeyPoolLease(env, requestId),
+    acquire: (requestId, attemptedSlotIds) =>
+      acquireKeyPoolLease(env, requestId, attemptedSlotIds),
     report: (input) => stub.reportOutcome(input),
     ...(env.DEPLOYMENT_STAGE === "staging"
       ? { consumeTestOutcome: (slotId: SlotId) => stub.consumeNextTestOutcome(slotId) }

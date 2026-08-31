@@ -8,7 +8,7 @@ All current canonical Wind codes are supported by `vendor_structured_contract` e
 
 | Exact `error.code` | Category | Decision | Evidence | Production observation |
 | --- | --- | --- | --- | --- |
-| `DAILY_LIMIT_ERROR` | `daily_quota` | fail over; mark `exhausted_until_reset` | `vendor_structured_contract` | Not yet production-observed |
+| `DAILY_LIMIT_ERROR` | `daily_quota` | advance cursor; hold until a trusted reset when present, otherwise allow a later wrap-around probe | `vendor_structured_contract` | Not yet production-observed |
 | `BALANCE_ERROR` | `balance` | fail over; mark `disabled_balance` | `vendor_structured_contract` | Not yet production-observed |
 | `AUTH_ERROR` | `auth` | fail over; mark `disabled_auth` | `vendor_structured_contract` | Not yet production-observed |
 | `RATE_LIMIT_ERROR` | `qps` | retry same slot once | `vendor_structured_contract` | Not yet production-observed |
@@ -19,6 +19,8 @@ HTTP `429` without an exact structured code is only `qps`; it cannot rotate a Ke
 `Retry-After` accepts only a machine-readable delta or HTTP date that resolves to 0–5000 ms. QPS otherwise waits 3000 ms; concurrency waits 3000 ms; network, timeout, and 5xx wait 500 ms. Each retry class has `maxRetries: 1`.
 
 `resetAt` accepts only a future numeric epoch from `error.reset_at` or a future HTTP date in `X-RateLimit-Reset`. The gateway never guesses a Wind reset time or settlement timezone.
+
+The pool cursor is event-driven, not request-driven. Success keeps the current slot. Exact daily quota, balance, authentication, and manual disable move the cursor to the next declared slot; balance/auth/manual states remain disabled until restored. QPS, concurrency, network, timeout, oversized response, 5xx, and unknown outcomes do not move it. Within one logical invocation, the KeyPool excludes every slot ID already attempted and stops after at most one lease per eligible slot; a later invocation starts with an empty attempted set.
 
 ## Model-visible notice
 

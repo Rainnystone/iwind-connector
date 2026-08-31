@@ -29,7 +29,10 @@ export interface WindToolCaller {
 }
 
 export interface InvocationKeyPool {
-  acquire(requestId: string): Promise<AcquireLeaseResult>;
+  acquire(
+    requestId: string,
+    attemptedSlotIds: readonly SlotId[],
+  ): Promise<AcquireLeaseResult>;
   report(input: ReportOutcomeInput): Promise<void>;
   consumeTestOutcome?(slotId: SlotId): Promise<Exclude<ReportOutcomeInput["category"], "success"> | null>;
 }
