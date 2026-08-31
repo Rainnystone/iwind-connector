@@ -29,6 +29,7 @@ describe("independent admin surface", () => {
     const body = await status.text();
     expect(status.status).toBe(200);
     expect(status.headers.get("cache-control")).toBe("no-store");
+    expect(body).toContain('"currentSlotId":"key-01"');
     expect(body).toContain('"slotId":"key-01"');
     expect(body).not.toContain("lease-secret");
     expect(body).not.toContain("request-secret");
@@ -165,6 +166,7 @@ function adminEnv(stage: "local" | "staging" | "production") {
   const stub = {
     async getStatus() {
       return {
+        currentSlotId: "key-01",
         slots: [
           {
             slotId: "key-01",

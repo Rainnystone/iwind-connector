@@ -43,6 +43,7 @@ export async function handleAdminRequest(
     const status = await keyPool.getStatus();
     return Response.json(
       {
+        currentSlotId: status.currentSlotId,
         slots: status.slots.map((slot) => ({
           slotId: slot.slotId,
           priority: slot.priority,

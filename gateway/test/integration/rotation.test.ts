@@ -27,8 +27,8 @@ afterEach(async () => {
 });
 
 describe("local KeyPool integration", () => {
-  it("rotates one canonical daily outcome to key-02, stays serial, and restores priority to key-01", async () => {
-    await setNextOutcome("daily_quota");
+  it("rotates consecutive canonical daily outcomes as key-01 to key-02 to key-01", async () => {
+    await setNextOutcome("key-01", "daily_quota");
     const caller = trackedCaller([SUCCESS]);
 
     const rotated = await invokeWindTool(REQUEST, dependencies(caller));
@@ -41,17 +41,24 @@ describe("local KeyPool integration", () => {
     });
     expect(caller.slots).toEqual(["key-02"]);
     expect(caller.maxInFlight).toBe(1);
+    expect(await currentSlotId()).toBe("key-02");
 
-    await admin("/admin/key-pool/slots/key-01/restore", {});
-    const restoredCaller = trackedCaller([SUCCESS]);
-    const restored = await invokeWindTool(
-      { ...REQUEST, requestId: "task-10-restored" },
-      dependencies(restoredCaller),
+    await setNextOutcome("key-02", "daily_quota");
+    const wrappedCaller = trackedCaller([SUCCESS]);
+    const wrapped = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-wrapped" },
+      dependencies(wrappedCaller),
     );
 
-    expect(restored.toolResult).toBe(SUCCESS);
-    expect(restored.notice).toBeNull();
-    expect(restoredCaller.slots).toEqual(["key-01"]);
+    expect(wrapped.toolResult).toBe(SUCCESS);
+    expect(wrapped.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "daily_quota",
+      finalStatus: "succeeded",
+    });
+    expect(wrappedCaller.slots).toEqual(["key-01"]);
+    expect(wrappedCaller.maxInFlight).toBe(1);
+    expect(await currentSlotId()).toBe("key-01");
   });
 
   it.each([
@@ -63,7 +70,7 @@ describe("local KeyPool integration", () => {
   ] as const)(
     "retries a synthetic %s outcome at most once on key-01 and never selects key-02",
     async (category, terminalFailure) => {
-      await setNextOutcome(category);
+      await setNextOutcome("key-01", category);
       const caller = trackedCaller([terminalFailure]);
 
       const result = await invokeWindTool(
@@ -84,7 +91,7 @@ describe("local KeyPool integration", () => {
   );
 
   it("stops an unknown synthetic outcome without retry or next-slot failover", async () => {
-    await setNextOutcome("unknown");
+    await setNextOutcome("key-01", "unknown");
     const caller = trackedCaller([]);
 
     const result = await invokeWindTool(
@@ -189,13 +196,20 @@ function dependencies(caller: WindToolCaller) {
   };
 }
 
-async function setNextOutcome(category: WindFailureCategory): Promise<void> {
+async function setNextOutcome(
+  slotId: "key-01" | "key-02",
+  category: WindFailureCategory,
+): Promise<void> {
   const response = await admin("/admin/test-controls/next-outcome", {
-    slotId: "key-01",
+    slotId,
     category,
     times: 1,
   });
   expect(response.status).toBe(204);
+}
+
+async function currentSlotId(): Promise<string> {
+  return (await env.KEY_POOL.getByName("private-key-pool").getStatus()).currentSlotId;
 }
 
 async function admin(path: string, body: object): Promise<Response> {
