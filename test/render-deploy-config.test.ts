@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { KEY_SLOT_DEFINITIONS } from "../gateway/src/key-pool/slots";
+
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "render-deploy-config.ts");
 const TSX_CLI = path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
@@ -71,7 +73,9 @@ describe("deploy config renderer", () => {
     expect(rendered.kv_namespaces).toEqual([
       { binding: "OAUTH_KV", id: "1234567890abcdef1234567890abcdef" },
     ]);
-    expect(rendered.secrets.required).toContain("WIND_API_KEY_01");
+    expect(rendered.secrets.required.filter((binding) => binding.startsWith("WIND_API_KEY_"))).toEqual(
+      KEY_SLOT_DEFINITIONS.map(({ secretBinding }) => secretBinding),
+    );
     await expect(readFile(SOURCE, "utf8")).resolves.toBe(sourceBefore);
   });
 

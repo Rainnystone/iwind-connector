@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/client";
 
 import type { UpstreamDefinition, UpstreamId } from "../config/upstreams";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool/types";
+import type { WindSecretBindingName } from "../key-pool/slots";
 import type { GatewayLogEvent } from "../logging/event";
 import type { OpsNoticeV1 } from "../notices/types";
 
@@ -33,12 +34,11 @@ export interface InvocationKeyPool {
   consumeTestOutcome?(slotId: SlotId): Promise<Exclude<ReportOutcomeInput["category"], "success"> | null>;
 }
 
-export interface InvocationEnvironment {
-  readonly KEY_POOL: Cloudflare.Env["KEY_POOL"];
-  readonly WIND_API_KEY_01: string | undefined;
-  readonly WIND_API_KEY_02: string | undefined;
+export type InvocationEnvironment = Pick<Cloudflare.Env, "KEY_POOL"> & {
+  readonly [Binding in WindSecretBindingName]: string | undefined;
+} & {
   readonly DEPLOYMENT_STAGE?: string;
-}
+};
 
 export interface InvocationDependencies {
   readonly env: InvocationEnvironment;

@@ -1,3 +1,5 @@
+import { KEY_SLOT_DEFINITIONS } from "./slots";
+
 const CREATE_SLOTS = `
   CREATE TABLE IF NOT EXISTS slots (
     slot_id TEXT PRIMARY KEY,
@@ -37,7 +39,7 @@ const CREATE_OAUTH_REPLAY_MARKER = `
   )
 `;
 
-const SEED_SLOTS = `
+const SEED_SLOT = `
   INSERT OR IGNORE INTO slots (
     slot_id,
     priority,
@@ -47,9 +49,7 @@ const SEED_SLOTS = `
     last_error_code,
     call_count,
     updated_at
-  ) VALUES
-    ('key-01', 1, 'active', NULL, NULL, NULL, 0, 0),
-    ('key-02', 2, 'active', NULL, NULL, NULL, 0, 0)
+  ) VALUES (?, ?, 'active', NULL, NULL, NULL, 0, 0)
 `;
 
 export function initializeKeyPoolSchema(sql: SqlStorage): void {
@@ -57,5 +57,7 @@ export function initializeKeyPoolSchema(sql: SqlStorage): void {
   sql.exec(CREATE_LEASE);
   sql.exec(CREATE_PENDING_TEST_OUTCOME);
   sql.exec(CREATE_OAUTH_REPLAY_MARKER);
-  sql.exec(SEED_SLOTS);
+  for (const definition of KEY_SLOT_DEFINITIONS) {
+    sql.exec(SEED_SLOT, definition.slotId, definition.priority);
+  }
 }

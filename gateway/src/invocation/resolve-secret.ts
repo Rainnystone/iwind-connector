@@ -1,3 +1,4 @@
+import { getKeySlotDefinition } from "../key-pool/slots";
 import type { SlotId } from "../key-pool/types";
 
 import type { InvocationEnvironment } from "./types";
@@ -9,20 +10,9 @@ export class MissingWindSecretError extends Error {
   }
 }
 
-export const WIND_SECRET_SLOT_CONTRACT = {
-  "key-01": true,
-  "key-02": true,
-} as const satisfies Readonly<Record<SlotId, true>>;
-
 export function resolveWindSecret(env: InvocationEnvironment, slotId: SlotId): string {
-  switch (slotId) {
-    case "key-01":
-      return requireWindSecret(env.WIND_API_KEY_01, slotId);
-    case "key-02":
-      return requireWindSecret(env.WIND_API_KEY_02, slotId);
-    default:
-      return assertNever(slotId);
-  }
+  const definition = getKeySlotDefinition(slotId);
+  return requireWindSecret(env[definition.secretBinding], slotId);
 }
 
 function requireWindSecret(value: string | undefined, slotId: SlotId): string {
@@ -30,8 +20,4 @@ function requireWindSecret(value: string | undefined, slotId: SlotId): string {
     throw new MissingWindSecretError(slotId);
   }
   return value;
-}
-
-function assertNever(value: never): never {
-  throw new Error(`WIND_SECRET_SLOT_UNKNOWN:${String(value)}`);
 }

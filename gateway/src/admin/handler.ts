@@ -1,5 +1,7 @@
 import { authenticateAdmin } from "./authenticate";
-import { hasExactKeys, isSlotId, parseTestControl } from "./test-control";
+import { isSlotId } from "../key-pool/slots";
+import type { SlotId } from "../key-pool/types";
+import { hasExactKeys, parseTestControl } from "./test-control";
 
 const TEST_CONTROL_PATH = "/admin/test-controls/next-outcome";
 const MAX_ADMIN_BODY_BYTES = 4096;
@@ -81,7 +83,7 @@ type AdminRoute =
   | {
       readonly kind: "slot";
       readonly method: "POST";
-      readonly slotId: "key-01" | "key-02";
+      readonly slotId: SlotId;
       readonly action: "restore" | "disable";
     }
   | { readonly kind: "test-control"; readonly method: "POST" };
@@ -89,7 +91,7 @@ type AdminRoute =
 function matchRoute(pathname: string): AdminRoute | null {
   if (pathname === "/admin/key-pool") return { kind: "status", method: "GET" };
   if (pathname === TEST_CONTROL_PATH) return { kind: "test-control", method: "POST" };
-  const match = pathname.match(/^\/admin\/key-pool\/slots\/(key-01|key-02)\/(restore|disable)$/u);
+  const match = pathname.match(/^\/admin\/key-pool\/slots\/([^/]+)\/(restore|disable)$/u);
   if (match === null || !isSlotId(match[1]) || (match[2] !== "restore" && match[2] !== "disable")) {
     return null;
   }

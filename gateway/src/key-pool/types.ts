@@ -1,6 +1,7 @@
 import type { WindFailureCategory } from "../errors/types";
+import type { SlotId } from "./slots";
 
-export type SlotId = "key-01" | "key-02";
+export type { SlotId } from "./slots";
 
 export type SlotState =
   | "active"

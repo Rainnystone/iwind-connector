@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { WindFailureCategory } from "../errors/types";
+import { isSlotId } from "./slots";
 import { initializeKeyPoolSchema } from "./schema";
 import type {
   AcquireLeaseResult,
@@ -353,7 +354,7 @@ function assertOAuthReplayMarkerInput(input: OAuthReplayMarkerInput): void {
 }
 
 function assertSlotId(value: string): asserts value is SlotId {
-  if (value !== "key-01" && value !== "key-02") throw new Error("UNKNOWN_SLOT");
+  if (!isSlotId(value)) throw new Error("UNKNOWN_SLOT");
 }
 
 function isOutcomeCategory(value: unknown): value is ReportOutcomeInput["category"] {
