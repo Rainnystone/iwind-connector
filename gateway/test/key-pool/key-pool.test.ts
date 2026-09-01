@@ -14,6 +14,12 @@ import type {
   SlotId,
 } from "../../src/key-pool/types";
 import { initializeKeyPoolSchema } from "../../src/key-pool/schema";
+import {
+  KEY_POOL_LAYOUTS,
+  KEY_SLOT_CATALOG,
+  type KeyPoolLayoutDefinition,
+  type KeySlotCatalogEntry,
+} from "../../src/key-pool/slots";
 
 const BASE_TIME = Date.UTC(2035, 7, 24, 0, 0, 0);
 
@@ -128,135 +134,315 @@ describe("KeyPool SQLite Durable Object", () => {
     });
   });
 
-  it("appends synthetic fourth and fifth slots atomically without changing live state", async () => {
-    const stub = primaryKeyPool();
-    const lease = await acquireLease(stub, "future-prefix-holder", BASE_TIME);
-    if (!lease.ok) throw new Error("fixture-lease-not-acquired");
-    await runInDurableObject(stub, (_instance, state) => {
-      state.storage.transactionSync(() => {
-        state.storage.sql.exec(
-          `UPDATE slots SET state = 'disabled_balance', last_error_code = 'balance',
-             call_count = 9, updated_at = ? WHERE slot_id = 'key-02'`,
-          BASE_TIME - 1,
-        );
+  it.each([
+    {
+      label: "cursor key-03",
+      cursor: "key-03",
+      expectedOrder: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+    },
+    {
+      label: "cursor key-02",
+      cursor: "key-02",
+      expectedOrder: ["key-05", "key-04", "key-02", "key-01", "key-03"],
+    },
+  ] as const)(
+    "inserts a synthetic 05/04 block before $label and preserves every old slot field",
+    async ({ cursor, expectedOrder }) => {
+      const stub = primaryKeyPool();
+      await stub.getStatus();
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            `UPDATE slots SET
+               state = CASE slot_id
+                 WHEN 'key-03' THEN 'cooldown'
+                 WHEN 'key-02' THEN 'disabled_balance'
+                 ELSE 'exhausted_until_reset'
+               END,
+               reset_at = CASE slot_id WHEN 'key-01' THEN ? ELSE NULL END,
+               cooldown_until = CASE slot_id WHEN 'key-03' THEN ? ELSE NULL END,
+               last_error_code = CASE slot_id
+                 WHEN 'key-03' THEN 'qps'
+                 WHEN 'key-02' THEN 'balance'
+                 ELSE 'daily_quota'
+               END,
+               call_count = CASE slot_id
+                 WHEN 'key-03' THEN 7 WHEN 'key-02' THEN 9 ELSE 11 END,
+               updated_at = CASE slot_id
+                 WHEN 'key-03' THEN ? WHEN 'key-02' THEN ? ELSE ? END`,
+            BASE_TIME + 90_000,
+            BASE_TIME + 30_000,
+            BASE_TIME - 3,
+            BASE_TIME - 2,
+            BASE_TIME - 1,
+          );
+          state.storage.sql.exec(
+            "UPDATE pool_state SET cursor_slot_id = ?, updated_at = ? WHERE singleton = 1",
+            cursor,
+            BASE_TIME - 1,
+          );
+        });
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME + 1,
+          syntheticPersistenceConfiguration([
+            syntheticSuccessorLayout(
+              "ring-primary-v2",
+              "ring-primary-v1",
+              ["key-05", "key-04", "key-03", "key-02", "key-01"],
+              ["key-05", "key-04"],
+            ),
+          ]),
+        ]);
       });
+
+      const persisted = await versionedPersistenceSnapshot(stub);
+      expect(persisted.slots.map((row) => row.slot_id)).toEqual(expectedOrder);
+      expect(persisted.slots).toEqual(
+        expectedOrder.map((slotId, index) => {
+          const oldRows = {
+            "key-03": { state: "cooldown", reset_at: null, cooldown_until: BASE_TIME + 30_000, last_error_code: "qps", call_count: 7, updated_at: BASE_TIME - 3 },
+            "key-02": { state: "disabled_balance", reset_at: null, cooldown_until: null, last_error_code: "balance", call_count: 9, updated_at: BASE_TIME - 2 },
+            "key-01": { state: "exhausted_until_reset", reset_at: BASE_TIME + 90_000, cooldown_until: null, last_error_code: "daily_quota", call_count: 11, updated_at: BASE_TIME - 1 },
+          } as const;
+          return {
+            slot_id: slotId,
+            priority: index + 1,
+            ...(oldRows[slotId as keyof typeof oldRows] ?? {
+              state: "active",
+              reset_at: null,
+              cooldown_until: null,
+              last_error_code: null,
+              call_count: 0,
+              updated_at: 0,
+            }),
+          };
+        }),
+      );
+      expect(persisted.cursor).toEqual([
+        { singleton: 1, cursor_slot_id: "key-05", updated_at: BASE_TIME + 1 },
+      ]);
+      expect(persisted.lease).toEqual([]);
+      expect(persisted.manifest).toEqual([
+        { singleton: 1, generation_id: "primary-v2", layout_id: "ring-primary-v2", updated_at: BASE_TIME + 1 },
+      ]);
+      expect(persisted.versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    },
+  );
+
+  it("inserts future key-06 before cursor key-04 using the persisted successor topology", async () => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    const firstSuccessor = syntheticSuccessorLayout(
+      "ring-primary-v2",
+      "ring-primary-v1",
+      ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      ["key-05", "key-04"],
+    );
+    const secondSuccessor = syntheticSuccessorLayout(
+      "ring-primary-v3",
+      "ring-primary-v2",
+      ["key-06", "key-05", "key-04", "key-03", "key-02", "key-01"],
+      ["key-06"],
+    );
+    await runInDurableObject(stub, (_instance, state) => {
       Reflect.apply(initializeKeyPoolSchema, undefined, [
         state.storage,
-        BASE_TIME + 1,
-        syntheticPersistenceConfiguration("ring-primary-v2", [
-          "key-03",
-          "key-02",
-          "key-01",
-          "key-04",
-        ]),
+        BASE_TIME,
+        syntheticPersistenceConfiguration([firstSuccessor]),
       ]);
+      state.storage.sql.exec(
+        "UPDATE pool_state SET cursor_slot_id = 'key-04', updated_at = ? WHERE singleton = 1",
+        BASE_TIME + 1,
+      );
       Reflect.apply(initializeKeyPoolSchema, undefined, [
         state.storage,
         BASE_TIME + 2,
-        syntheticPersistenceConfiguration("ring-primary-v3", [
-          "key-03",
-          "key-02",
-          "key-01",
-          "key-04",
-          "key-05",
-        ]),
+        syntheticPersistenceConfiguration([firstSuccessor, secondSuccessor]),
       ]);
     });
 
-    const persisted = await runInDurableObject(stub, (_instance, state) => ({
-      slots: state.storage.sql
-        .exec<
-          Record<string, SqlStorageValue> & {
-            slot_id: string;
-            priority: number;
-            state: string;
-            call_count: number;
-            last_error_code: string | null;
-          }
-        >(
-          "SELECT slot_id, priority, state, call_count, last_error_code FROM slots ORDER BY priority",
-        )
-        .toArray(),
-      cursor: state.storage.sql
-        .exec<Record<string, SqlStorageValue> & { cursor_slot_id: string }>(
-          "SELECT cursor_slot_id FROM pool_state WHERE singleton = 1",
-        )
-        .one().cursor_slot_id,
-      lease: state.storage.sql
-        .exec<Record<string, SqlStorageValue> & { lease_id: string; slot_id: string }>(
-          "SELECT lease_id, slot_id FROM lease WHERE singleton = 1",
-        )
-        .one(),
-      manifest: state.storage.sql
-        .exec<Record<string, SqlStorageValue> & { generation_id: string; layout_id: string }>(
-          "SELECT generation_id, layout_id FROM pool_manifest WHERE singleton = 1",
-        )
-        .one(),
-      versions: state.storage.sql
-        .exec<Record<string, SqlStorageValue> & { version: number }>(
-          "SELECT version FROM _key_pool_schema_migrations ORDER BY version",
-        )
-        .toArray()
-        .map(({ version }) => version),
-    }));
-    expect(persisted).toEqual({
-      slots: [
-        { slot_id: "key-03", priority: 1, state: "active", call_count: 0, last_error_code: null },
-        { slot_id: "key-02", priority: 2, state: "disabled_balance", call_count: 9, last_error_code: "balance" },
-        { slot_id: "key-01", priority: 3, state: "active", call_count: 0, last_error_code: null },
-        { slot_id: "key-04", priority: 4, state: "active", call_count: 0, last_error_code: null },
-        { slot_id: "key-05", priority: 5, state: "active", call_count: 0, last_error_code: null },
-      ],
-      cursor: "key-03",
-      lease: { lease_id: lease.leaseId, slot_id: "key-03" },
-      manifest: { generation_id: "primary-v2", layout_id: "ring-primary-v3" },
-      versions: [1, 2, 3],
-    });
+    const snapshot = await versionedPersistenceSnapshot(stub);
+    expect(snapshot.slots.map((row) => row.slot_id)).toEqual([
+      "key-06",
+      "key-04",
+      "key-03",
+      "key-02",
+      "key-01",
+      "key-05",
+    ]);
+    expect(snapshot.cursor).toEqual([
+      { singleton: 1, cursor_slot_id: "key-06", updated_at: BASE_TIME + 2 },
+    ]);
+    expect(snapshot.manifest).toEqual([
+      { singleton: 1, generation_id: "primary-v2", layout_id: "ring-primary-v3", updated_at: BASE_TIME + 2 },
+    ]);
   });
 
-  it.each([
-    ["reorder", "ring-primary-reorder", ["key-03", "key-01", "key-02"]],
-    ["middle insertion", "ring-primary-middle", ["key-03", "key-04", "key-02", "key-01"]],
-    ["non-prefix removal", "ring-primary-removal", ["key-03", "key-01"]],
-    ["rename", "ring-primary-rename", ["key-03", "key-02", "key-renamed"]],
-  ] as const)("fails closed for same-generation %s", async (_label, layoutId, orderedSlotIds) => {
+  it("rejects a live lease with zero writes and cleans an expired lease in the migration transaction", async () => {
     const stub = primaryKeyPool();
-    await stub.getStatus();
+    const lease = await acquireLease(stub, "layout-migration-holder", BASE_TIME);
+    if (!lease.ok) throw new Error("fixture-lease-not-acquired");
+    const successor = syntheticSuccessorLayout(
+      "ring-primary-v2",
+      "ring-primary-v1",
+      ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      ["key-05", "key-04"],
+    );
+    const before = await versionedPersistenceSnapshot(stub);
 
     await expect(
       runInDurableObject(stub, (_instance, state) =>
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
-          BASE_TIME,
-          syntheticPersistenceConfiguration(layoutId, orderedSlotIds),
+          BASE_TIME + 1,
+          syntheticPersistenceConfiguration([successor]),
         ]),
       ),
-    ).rejects.toThrow("KEY_POOL_LAYOUT_PREFIX_REQUIRED");
-    await expect(stub.getStatus()).resolves.toMatchObject({
-      currentSlotId: "key-03",
-      slots: [
-        { slotId: "key-03", priority: 1 },
-        { slotId: "key-02", priority: 2 },
-        { slotId: "key-01", priority: 3 },
-      ],
-    });
+    ).rejects.toThrow("KEY_POOL_LAYOUT_MIGRATION_BUSY");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(before);
+
+    await runInDurableObject(stub, (_instance, state) =>
+      Reflect.apply(initializeKeyPoolSchema, undefined, [
+        state.storage,
+        lease.expiresAt,
+        syntheticPersistenceConfiguration([successor]),
+      ]),
+    );
+    const migrated = await versionedPersistenceSnapshot(stub);
+    expect(migrated.lease).toEqual([]);
+    expect(migrated.slots.map((row) => row.slot_id)).toEqual([
+      "key-05",
+      "key-04",
+      "key-03",
+      "key-02",
+      "key-01",
+    ]);
   });
 
   it.each([
-    ["duplicate slot", ["key-03", "key-02", "key-02"]],
-    ["catalog-external slot", ["key-03", "key-02", "key-01", "key-06"]],
-  ] as const)("rejects an invalid target layout with a %s", async (_label, orderedSlotIds) => {
+    ["deletion", ["key-05", "key-04", "key-03", "key-02"], ["key-05", "key-04"]],
+    ["rename", ["key-05", "key-04", "key-03", "key-02", "key-renamed"], ["key-05", "key-04", "key-renamed"]],
+    ["duplicate member", ["key-05", "key-04", "key-03", "key-02", "key-01", "key-01"], ["key-05", "key-04"]],
+  ] as const)("fails closed with zero writes for successor %s", async (_label, slotIds, insertedSlotIds) => {
     const stub = primaryKeyPool();
     await stub.getStatus();
+    const before = await versionedPersistenceSnapshot(stub);
     await expect(
       runInDurableObject(stub, (_instance, state) =>
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME,
-          syntheticPersistenceConfiguration("ring-invalid", orderedSlotIds),
+          syntheticPersistenceConfiguration([
+            syntheticSuccessorLayout(
+              `ring-primary-${_label}`,
+              "ring-primary-v1",
+              slotIds,
+              insertedSlotIds,
+            ),
+          ]),
         ]),
       ),
     ).rejects.toThrow("INVALID_KEY_POOL_LAYOUT");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(before);
+  });
+
+  it("fails closed with zero writes for a successor jump or divergent sibling", async () => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    const successorA = syntheticSuccessorLayout(
+      "ring-primary-a",
+      "ring-primary-v1",
+      ["key-04", "key-03", "key-02", "key-01"],
+      ["key-04"],
+    );
+    const successorB = syntheticSuccessorLayout(
+      "ring-primary-b",
+      "ring-primary-v1",
+      ["key-05", "key-03", "key-02", "key-01"],
+      ["key-05"],
+    );
+    const successorAfterA = syntheticSuccessorLayout(
+      "ring-primary-after-a",
+      "ring-primary-a",
+      ["key-06", "key-04", "key-03", "key-02", "key-01"],
+      ["key-06"],
+    );
+    const rootSnapshot = await versionedPersistenceSnapshot(stub);
+
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration([successorA, successorAfterA]),
+        ]),
+      ),
+    ).rejects.toThrow("KEY_POOL_LAYOUT_TRANSITION_REQUIRED");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(rootSnapshot);
+
+    await runInDurableObject(stub, (_instance, state) =>
+      Reflect.apply(initializeKeyPoolSchema, undefined, [
+        state.storage,
+        BASE_TIME + 1,
+        syntheticPersistenceConfiguration([successorA]),
+      ]),
+    );
+    const successorSnapshot = await versionedPersistenceSnapshot(stub);
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME + 2,
+          syntheticPersistenceConfiguration([successorA, successorB]),
+        ]),
+      ),
+    ).rejects.toThrow("KEY_POOL_LAYOUT_DIVERGENCE");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(successorSnapshot);
+  });
+
+  it("keeps a persisted successor authoritative across repeat initialization and eviction", async () => {
+    const successor = syntheticSuccessorLayout(
+      "ring-primary-v2-test-only",
+      "ring-primary-v1",
+      ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      ["key-05", "key-04"],
+    );
+    const mutableCatalog = KEY_SLOT_CATALOG as unknown as KeySlotCatalogEntry[];
+    const mutableLayouts = KEY_POOL_LAYOUTS as unknown as Record<string, KeyPoolLayoutDefinition>;
+    const originalCatalogLength = mutableCatalog.length;
+    mutableCatalog.push(
+      { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
+      { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
+    );
+    mutableLayouts[successor.layoutId] = successor as KeyPoolLayoutDefinition;
+
+    try {
+      const stub = primaryKeyPool();
+      await stub.getStatus();
+      await runInDurableObject(stub, (_instance, state) => {
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration([successor]),
+        ]);
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME + 1,
+          syntheticPersistenceConfiguration([successor]),
+        ]);
+      });
+      const beforeEviction = await versionedPersistenceSnapshot(stub);
+
+      await evictDurableObject(stub);
+      await stub.getStatus();
+
+      expect(await versionedPersistenceSnapshot(stub)).toEqual(beforeEviction);
+      expect(beforeEviction.manifest[0]?.layout_id).toBe(successor.layoutId);
+    } finally {
+      delete mutableLayouts[successor.layoutId];
+      mutableCatalog.splice(originalCatalogLength);
+    }
   });
 
   it("rejects non-contiguous persisted priorities without repairing the object", async () => {
@@ -273,11 +459,7 @@ describe("KeyPool SQLite Durable Object", () => {
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME,
-          syntheticPersistenceConfiguration("ring-primary-v1", [
-            "key-03",
-            "key-02",
-            "key-01",
-          ]),
+          syntheticPersistenceConfiguration([]),
         ]),
       ),
     ).rejects.toThrow("INVALID_STORED_KEY_POOL_LAYOUT");
@@ -286,15 +468,12 @@ describe("KeyPool SQLite Durable Object", () => {
   it("fails closed for generation mismatch and unknown stored metadata", async () => {
     const stub = primaryKeyPool();
     await stub.getStatus();
-    const mismatchTarget = {
-      layoutId: "ring-other-v1",
-      generationId: "other-v3",
-      orderedSlotIds: ["key-03", "key-02", "key-01", "key-04"],
-    } as const;
-    const mismatchConfiguration = syntheticPersistenceConfiguration(
-      mismatchTarget.layoutId,
-      mismatchTarget.orderedSlotIds,
+    const mismatchTarget = syntheticRootLayout(
+      "ring-other-v1",
+      "other-v3",
+      ["key-03", "key-02", "key-01", "key-04"],
     );
+    const mismatchConfiguration = syntheticPersistenceConfiguration([]);
     await expect(
       runInDurableObject(stub, (_instance, state) =>
         Reflect.apply(initializeKeyPoolSchema, undefined, [
@@ -320,11 +499,7 @@ describe("KeyPool SQLite Durable Object", () => {
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME,
-          syntheticPersistenceConfiguration("ring-primary-v1", [
-            "key-03",
-            "key-02",
-            "key-01",
-          ]),
+          syntheticPersistenceConfiguration([]),
         ]),
       ),
     ).rejects.toThrow("KEY_POOL_GENERATION_MISMATCH");
@@ -341,11 +516,7 @@ describe("KeyPool SQLite Durable Object", () => {
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME,
-          syntheticPersistenceConfiguration("ring-primary-v1", [
-            "key-03",
-            "key-02",
-            "key-01",
-          ]),
+          syntheticPersistenceConfiguration([]),
         ]),
       ),
     ).rejects.toThrow("UNKNOWN_STORED_KEY_POOL_LAYOUT");
@@ -428,11 +599,7 @@ describe("KeyPool SQLite Durable Object", () => {
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME,
-          syntheticPersistenceConfiguration("ring-primary-v1", [
-            "key-03",
-            "key-02",
-            "key-01",
-          ]),
+          syntheticPersistenceConfiguration([]),
         ]),
       ),
     ).rejects.toThrow(error);
@@ -463,11 +630,7 @@ describe("KeyPool SQLite Durable Object", () => {
         Reflect.apply(initializeKeyPoolSchema, undefined, [
           state.storage,
           BASE_TIME + 1,
-          syntheticPersistenceConfiguration("ring-primary-v1", [
-            "key-03",
-            "key-02",
-            "key-01",
-          ]),
+          syntheticPersistenceConfiguration([]),
         ]),
       ),
     ).rejects.toThrow("INVALID_KEY_POOL_SCHEMA");
@@ -1318,29 +1481,13 @@ async function versionedPersistenceSnapshot(stub: ReturnType<typeof primaryKeyPo
   }));
 }
 
-function syntheticPersistenceConfiguration(
-  layoutId: string,
-  orderedSlotIds: readonly string[],
-) {
-  const knownLayouts = [
-    {
-      layoutId: "ring-primary-v1",
-      generationId: "primary-v2",
-      orderedSlotIds: ["key-03", "key-02", "key-01"],
-    },
-    ...(layoutId === "ring-primary-v3"
-      ? [
-          {
-            layoutId: "ring-primary-v2",
-            generationId: "primary-v2",
-            orderedSlotIds: ["key-03", "key-02", "key-01", "key-04"],
-          },
-        ]
-      : []),
-    ...(layoutId === "ring-primary-v1"
-      ? []
-      : [{ layoutId, generationId: "primary-v2", orderedSlotIds }]),
-  ];
+function syntheticPersistenceConfiguration(successors: readonly KeyPoolLayoutDefinition[]) {
+  const root = syntheticRootLayout(
+    "ring-primary-v1",
+    "primary-v2",
+    ["key-03", "key-02", "key-01"],
+  );
+  const knownLayouts = [root, ...successors];
   return {
     catalog: [
       { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
@@ -1348,11 +1495,43 @@ function syntheticPersistenceConfiguration(
       { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
       { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
       { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
+      { slotId: "key-06", secretBinding: "WIND_API_KEY_06" },
       { slotId: "key-renamed", secretBinding: "WIND_API_KEY_RENAMED" },
     ],
     generation: { generationId: "primary-v2", objectName: "private-key-pool-v2" },
-    targetLayout: knownLayouts.at(-1),
+    targetLayout: knownLayouts.at(-1) as KeyPoolLayoutDefinition,
     knownLayouts,
     preserveLegacySchema: false,
+  };
+}
+
+function syntheticRootLayout(
+  layoutId: string,
+  generationId: string,
+  initialRingOrder: readonly string[],
+): KeyPoolLayoutDefinition {
+  return {
+    layoutId,
+    generationId,
+    predecessorLayoutId: null,
+    slotIds: initialRingOrder,
+    initialRingOrder,
+    insertedBeforeCursorSlotIds: [],
+  };
+}
+
+function syntheticSuccessorLayout(
+  layoutId: string,
+  predecessorLayoutId: string,
+  initialRingOrder: readonly string[],
+  insertedBeforeCursorSlotIds: readonly string[],
+): KeyPoolLayoutDefinition {
+  return {
+    layoutId,
+    generationId: "primary-v2",
+    predecessorLayoutId,
+    slotIds: initialRingOrder,
+    initialRingOrder,
+    insertedBeforeCursorSlotIds,
   };
 }

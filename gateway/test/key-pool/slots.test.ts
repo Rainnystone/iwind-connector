@@ -11,6 +11,7 @@ import {
   KEY_POOL_LAYOUTS,
   KEY_SLOT_CATALOG,
   KEY_SLOT_DEFINITIONS,
+  type KeyPoolLayoutDefinition,
 } from "../../src/key-pool/slots";
 import { nextSlotId, orderSlotRing } from "../../src/key-pool/slot-ring";
 
@@ -58,7 +59,10 @@ describe("key slot manifest", () => {
     expect(configuration.layout).toMatchObject({
       layoutId: "ring-primary-v1",
       generationId: "primary-v2",
-      orderedSlotIds: ["key-03", "key-02", "key-01"],
+      predecessorLayoutId: null,
+      slotIds: ["key-03", "key-02", "key-01"],
+      initialRingOrder: ["key-03", "key-02", "key-01"],
+      insertedBeforeCursorSlotIds: [],
     });
     expect(configuration.generation).toEqual({
       generationId: "primary-v2",
@@ -83,7 +87,14 @@ describe("key slot manifest", () => {
     >;
     const layouts = KEY_POOL_LAYOUTS as unknown as Record<
       string,
-      { layoutId: string; generationId: string; orderedSlotIds: readonly ("key-01")[] }
+      {
+        layoutId: string;
+        generationId: string;
+        predecessorLayoutId: null;
+        slotIds: readonly ("key-01")[];
+        initialRingOrder: readonly ("key-01")[];
+        insertedBeforeCursorSlotIds: readonly [];
+      }
     >;
     generations.duplicateObjectName = {
       generationId: "duplicate-object-name-v3",
@@ -92,7 +103,10 @@ describe("key slot manifest", () => {
     layouts["ring-duplicate-object-name-v1"] = {
       layoutId: "ring-duplicate-object-name-v1",
       generationId: "duplicate-object-name-v3",
-      orderedSlotIds: ["key-01"],
+      predecessorLayoutId: null,
+      slotIds: ["key-01"],
+      initialRingOrder: ["key-01"],
+      insertedBeforeCursorSlotIds: [],
     };
 
     try {
@@ -102,6 +116,23 @@ describe("key slot manifest", () => {
     } finally {
       delete layouts["ring-duplicate-object-name-v1"];
       delete generations.duplicateObjectName;
+    }
+  });
+
+  it("rejects a layout that omits cursor-relative metadata with a deterministic error", () => {
+    const layouts = KEY_POOL_LAYOUTS as unknown as Record<string, KeyPoolLayoutDefinition>;
+    layouts["ring-malformed-v1"] = {
+      layoutId: "ring-malformed-v1",
+      generationId: "primary-v2",
+      orderedSlotIds: ["key-03", "key-02", "key-01"],
+    } as unknown as KeyPoolLayoutDefinition;
+
+    try {
+      expect(() => getKeyPoolConfiguration("ring-malformed-v1")).toThrow(
+        "INVALID_KEY_POOL_LAYOUT",
+      );
+    } finally {
+      delete layouts["ring-malformed-v1"];
     }
   });
 });

@@ -1,10 +1,12 @@
-import { nextSlotId } from "./slot-ring";
+import { nextSlotId, orderSlotRing } from "./slot-ring";
 import {
   KEY_POOL_GENERATIONS,
   KEY_POOL_LAYOUTS,
   KEY_SLOT_CATALOG,
   LEGACY_KEY_POOL_LAYOUT_ID,
   getKeyPoolConfiguration,
+  validateLayoutEvolution,
+  validateLayoutMetadata,
   type KeyPoolGenerationDefinition,
   type KeyPoolLayoutDefinition,
   type KeySlotCatalogEntry,
@@ -139,7 +141,7 @@ export function initializeKeyPoolSchema(
 ): void {
   validatePersistenceConfiguration(configuration);
   if (configuration.preserveLegacySchema) {
-    initializeLegacySchema(storage, now, configuration.targetLayout.orderedSlotIds);
+    initializeLegacySchema(storage, now, configuration.targetLayout.initialRingOrder);
     return;
   }
   initializeVersionedSchema(storage, now, configuration);
@@ -259,23 +261,20 @@ function initializeVersionedSchema(
       throw new Error("KEY_POOL_GENERATION_MISMATCH");
     }
 
-    assertStoredLayout(sql, storedLayout, configuration.catalog);
-    assertStoredCursorAndLease(sql, storedLayout.orderedSlotIds);
+    const storedRows = assertStoredLayout(sql, storedLayout, configuration.catalog);
+    const storedCursor = assertStoredCursorAndLease(sql, storedLayout.slotIds);
 
     const target = configuration.targetLayout;
     if (target.layoutId === storedLayout.layoutId) return;
-    if (isStrictPrefix(target.orderedSlotIds, storedLayout.orderedSlotIds)) return;
-    if (!isStrictPrefix(storedLayout.orderedSlotIds, target.orderedSlotIds)) {
-      throw new Error("KEY_POOL_LAYOUT_PREFIX_REQUIRED");
+    if (isLayoutAncestor(target.layoutId, storedLayout, configuration.knownLayouts)) return;
+    if (target.predecessorLayoutId !== storedLayout.layoutId) {
+      if (isLayoutAncestor(storedLayout.layoutId, target, configuration.knownLayouts)) {
+        throw new Error("KEY_POOL_LAYOUT_TRANSITION_REQUIRED");
+      }
+      throw new Error("KEY_POOL_LAYOUT_DIVERGENCE");
     }
-    for (
-      let index = storedLayout.orderedSlotIds.length;
-      index < target.orderedSlotIds.length;
-      index += 1
-    ) {
-      const slotId = target.orderedSlotIds[index] as string;
-      sql.exec(SEED_SLOT, slotId, index + 1);
-    }
+
+    migrateToDirectSuccessor(sql, now, target, storedRows, storedCursor);
     sql.exec(
       "UPDATE pool_manifest SET layout_id = ?, updated_at = ? WHERE singleton = 1",
       target.layoutId,
@@ -289,10 +288,10 @@ function initializeEmptyVersionedPool(
   now: number,
   configuration: KeyPoolPersistenceConfiguration,
 ): void {
-  for (const [index, slotId] of configuration.targetLayout.orderedSlotIds.entries()) {
+  for (const [index, slotId] of configuration.targetLayout.initialRingOrder.entries()) {
     sql.exec(SEED_SLOT, slotId, index + 1);
   }
-  const firstSlotId = configuration.targetLayout.orderedSlotIds[0] as string;
+  const firstSlotId = configuration.targetLayout.initialRingOrder[0] as string;
   sql.exec(
     "INSERT INTO pool_state (singleton, cursor_slot_id, updated_at) VALUES (1, ?, ?)",
     firstSlotId,
@@ -318,42 +317,102 @@ function assertStoredLayout(
   sql: SqlStorage,
   storedLayout: KeyPoolLayoutDefinition,
   catalog: readonly KeySlotCatalogEntry[],
-): void {
+): readonly StoredSlotRow[] {
   const catalogSlotIds = new Set(catalog.map(({ slotId }) => slotId));
+  const storedLayoutSlotIds = new Set(storedLayout.slotIds);
   const rows = sql
     .exec<StoredSlotRow>("SELECT slot_id, priority FROM slots ORDER BY priority ASC")
     .toArray();
-  if (rows.length !== storedLayout.orderedSlotIds.length) {
+  if (rows.length !== storedLayout.slotIds.length) {
     throw new Error("INVALID_STORED_KEY_POOL_LAYOUT");
   }
   for (const [index, row] of rows.entries()) {
     if (
       !catalogSlotIds.has(row.slot_id) ||
       row.priority !== index + 1 ||
-      row.slot_id !== storedLayout.orderedSlotIds[index]
+      !storedLayoutSlotIds.has(row.slot_id)
     ) {
       throw new Error("INVALID_STORED_KEY_POOL_LAYOUT");
     }
   }
+  if (new Set(rows.map(({ slot_id: slotId }) => slotId)).size !== rows.length) {
+    throw new Error("INVALID_STORED_KEY_POOL_LAYOUT");
+  }
+  return rows;
 }
 
-function assertStoredCursorAndLease(sql: SqlStorage, orderedSlotIds: readonly string[]): void {
+function assertStoredCursorAndLease(sql: SqlStorage, slotIds: readonly string[]): string {
   const cursor = sql
     .exec<Record<string, SqlStorageValue> & { cursor_slot_id: string }>(
       "SELECT cursor_slot_id FROM pool_state WHERE singleton = 1",
     )
     .toArray()[0]?.cursor_slot_id;
-  if (cursor === undefined || !orderedSlotIds.includes(cursor)) {
+  if (cursor === undefined || !slotIds.includes(cursor)) {
     throw new Error("INVALID_STORED_POOL_CURSOR");
   }
-  const leaseSlotId = sql
-    .exec<Record<string, SqlStorageValue> & { slot_id: string }>(
-      "SELECT slot_id FROM lease WHERE singleton = 1",
+  const lease = sql
+    .exec<
+      Record<string, SqlStorageValue> & {
+        slot_id: string;
+        expires_at: number;
+      }
+    >(
+      "SELECT slot_id, expires_at FROM lease WHERE singleton = 1",
     )
-    .toArray()[0]?.slot_id;
-  if (leaseSlotId !== undefined && !orderedSlotIds.includes(leaseSlotId)) {
+    .toArray()[0];
+  if (
+    lease !== undefined &&
+    (!slotIds.includes(lease.slot_id) ||
+      !Number.isSafeInteger(lease.expires_at) ||
+      lease.expires_at < 0)
+  ) {
     throw new Error("INVALID_STORED_POOL_LEASE");
   }
+  return cursor;
+}
+
+function migrateToDirectSuccessor(
+  sql: SqlStorage,
+  now: number,
+  target: KeyPoolLayoutDefinition,
+  storedRows: readonly StoredSlotRow[],
+  storedCursor: string,
+): void {
+  const lease = sql
+    .exec<Record<string, SqlStorageValue> & { expires_at: number }>(
+      "SELECT expires_at FROM lease WHERE singleton = 1",
+    )
+    .toArray()[0];
+  if (lease !== undefined && lease.expires_at > now) {
+    throw new Error("KEY_POOL_LAYOUT_MIGRATION_BUSY");
+  }
+  if (lease !== undefined) sql.exec("DELETE FROM lease WHERE singleton = 1");
+
+  const oldEffectiveOrder = orderSlotRing(
+    storedRows.map(({ slot_id: slotId, priority }) => ({ slotId, priority })),
+    storedCursor,
+  ).map(({ slotId }) => slotId);
+  const newOrder = [...target.insertedBeforeCursorSlotIds, ...oldEffectiveOrder];
+  if (!sameMembers(newOrder, target.slotIds)) throw new Error("INVALID_KEY_POOL_LAYOUT");
+
+  sql.exec("UPDATE slots SET priority = priority + ?", target.slotIds.length);
+  for (const [index, slotId] of target.insertedBeforeCursorSlotIds.entries()) {
+    sql.exec(SEED_SLOT, slotId, index + 1);
+  }
+  for (const [index, slotId] of oldEffectiveOrder.entries()) {
+    sql.exec(
+      "UPDATE slots SET priority = ? WHERE slot_id = ?",
+      target.insertedBeforeCursorSlotIds.length + index + 1,
+      slotId,
+    );
+  }
+  const newCursor = target.insertedBeforeCursorSlotIds[0];
+  if (newCursor === undefined) throw new Error("INVALID_KEY_POOL_LAYOUT");
+  sql.exec(
+    "UPDATE pool_state SET cursor_slot_id = ?, updated_at = ? WHERE singleton = 1",
+    newCursor,
+    now,
+  );
 }
 
 function synchronizeLegacySlots(
@@ -436,11 +495,20 @@ function validatePersistenceConfiguration(configuration: KeyPoolPersistenceConfi
   }
   const layoutIds = new Set<string>();
   for (const layout of configuration.knownLayouts) {
-    validateLayout(layout, catalogSlotIds);
     if (layoutIds.has(layout.layoutId)) throw new Error("INVALID_KEY_POOL_LAYOUT");
     layoutIds.add(layout.layoutId);
   }
-  validateLayout(configuration.targetLayout, catalogSlotIds);
+  for (const layout of configuration.knownLayouts) {
+    validateLayoutMetadata(layout, layoutIds, (slotId) => catalogSlotIds.has(slotId));
+  }
+  for (const layout of configuration.knownLayouts) {
+    validateLayoutEvolution(layout, configuration.knownLayouts);
+  }
+  validateLayoutMetadata(
+    configuration.targetLayout,
+    layoutIds,
+    (slotId) => catalogSlotIds.has(slotId),
+  );
   if (configuration.targetLayout.generationId !== configuration.generation.generationId) {
     throw new Error("INVALID_KEY_POOL_GENERATION");
   }
@@ -450,7 +518,13 @@ function validatePersistenceConfiguration(configuration: KeyPoolPersistenceConfi
   if (
     registeredTarget === undefined ||
     registeredTarget.generationId !== configuration.targetLayout.generationId ||
-    !sameSlots(registeredTarget.orderedSlotIds, configuration.targetLayout.orderedSlotIds)
+    registeredTarget.predecessorLayoutId !== configuration.targetLayout.predecessorLayoutId ||
+    !sameSlots(registeredTarget.slotIds, configuration.targetLayout.slotIds) ||
+    !sameSlots(registeredTarget.initialRingOrder, configuration.targetLayout.initialRingOrder) ||
+    !sameSlots(
+      registeredTarget.insertedBeforeCursorSlotIds,
+      configuration.targetLayout.insertedBeforeCursorSlotIds,
+    )
   ) {
     throw new Error("INVALID_KEY_POOL_LAYOUT");
   }
@@ -460,18 +534,6 @@ function validatePersistenceConfiguration(configuration: KeyPoolPersistenceConfi
       configuration.generation.generationId === KEY_POOL_GENERATIONS.legacy.generationId)
   ) {
     throw new Error("INVALID_KEY_POOL_SCHEMA_MODE");
-  }
-}
-
-function validateLayout(layout: KeyPoolLayoutDefinition, catalogSlotIds: ReadonlySet<string>): void {
-  if (
-    !isNonEmptyString(layout.layoutId) ||
-    !isNonEmptyString(layout.generationId) ||
-    layout.orderedSlotIds.length === 0 ||
-    new Set(layout.orderedSlotIds).size !== layout.orderedSlotIds.length ||
-    layout.orderedSlotIds.some((slotId) => !catalogSlotIds.has(slotId))
-  ) {
-    throw new Error("INVALID_KEY_POOL_LAYOUT");
   }
 }
 
@@ -503,12 +565,34 @@ function readTableNames(sql: SqlStorage): Set<string> {
   );
 }
 
-function isStrictPrefix(previous: readonly string[], next: readonly string[]): boolean {
-  return next.length > previous.length && previous.every((slotId, index) => next[index] === slotId);
-}
-
 function sameSlots(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((slotId, index) => right[index] === slotId);
+}
+
+function sameMembers(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    new Set(left).size === left.length &&
+    left.every((slotId) => right.includes(slotId))
+  );
+}
+
+function isLayoutAncestor(
+  ancestorLayoutId: string,
+  descendant: KeyPoolLayoutDefinition,
+  knownLayouts: readonly KeyPoolLayoutDefinition[],
+): boolean {
+  let predecessorLayoutId = descendant.predecessorLayoutId;
+  const visited = new Set<string>();
+  while (predecessorLayoutId !== null) {
+    if (predecessorLayoutId === ancestorLayoutId) return true;
+    if (visited.has(predecessorLayoutId)) throw new Error("INVALID_KEY_POOL_LAYOUT");
+    visited.add(predecessorLayoutId);
+    const predecessor = knownLayouts.find(({ layoutId }) => layoutId === predecessorLayoutId);
+    if (predecessor === undefined) throw new Error("INVALID_KEY_POOL_LAYOUT");
+    predecessorLayoutId = predecessor.predecessorLayoutId;
+  }
+  return false;
 }
 
 function sameVersions(left: readonly number[], right: readonly number[]): boolean {

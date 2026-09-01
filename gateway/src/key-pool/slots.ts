@@ -15,7 +15,10 @@ export interface KeyPoolGenerationDefinition {
 export interface KeyPoolLayoutDefinition {
   readonly layoutId: string;
   readonly generationId: string;
-  readonly orderedSlotIds: readonly SlotId[];
+  readonly predecessorLayoutId: string | null;
+  readonly slotIds: readonly string[];
+  readonly initialRingOrder: readonly string[];
+  readonly insertedBeforeCursorSlotIds: readonly string[];
 }
 
 export const KEY_SLOT_CATALOG = [
@@ -36,12 +39,18 @@ export const KEY_POOL_LAYOUTS = {
   "ring-legacy-v1": {
     layoutId: "ring-legacy-v1",
     generationId: "legacy-v1",
-    orderedSlotIds: ["key-01", "key-02"],
+    predecessorLayoutId: null,
+    slotIds: ["key-01", "key-02"],
+    initialRingOrder: ["key-01", "key-02"],
+    insertedBeforeCursorSlotIds: [],
   },
   "ring-primary-v1": {
     layoutId: "ring-primary-v1",
     generationId: "primary-v2",
-    orderedSlotIds: ["key-03", "key-02", "key-01"],
+    predecessorLayoutId: null,
+    slotIds: ["key-03", "key-02", "key-01"],
+    initialRingOrder: ["key-03", "key-02", "key-01"],
+    insertedBeforeCursorSlotIds: [],
   },
 } as const satisfies Readonly<Record<string, KeyPoolLayoutDefinition>>;
 
@@ -65,7 +74,7 @@ export function isSlotId(value: unknown): value is SlotId {
 }
 
 export function isSlotIdInLayout(value: unknown, layoutId: unknown): value is SlotId {
-  return isSlotId(value) && getKeyPoolConfiguration(layoutId).layout.orderedSlotIds.includes(value);
+  return isSlotId(value) && getKeyPoolConfiguration(layoutId).layout.slotIds.includes(value);
 }
 
 export function getKeySlotDefinition(slotId: SlotId): ConfiguredKeySlotDefinition {
@@ -76,8 +85,8 @@ export function getKeySlotDefinition(slotId: SlotId): ConfiguredKeySlotDefinitio
 
 export function getKeySlotDefinitions(layoutId: unknown): readonly KeySlotDefinition[] {
   const layout = getKeyPoolConfiguration(layoutId).layout;
-  return layout.orderedSlotIds.map((slotId, index) => ({
-    ...getKeySlotDefinition(slotId),
+  return layout.initialRingOrder.map((slotId, index) => ({
+    ...getKeySlotDefinition(slotId as SlotId),
     priority: index + 1,
   }));
 }
@@ -159,23 +168,90 @@ function validateKeyPoolDefinitions(): void {
     generationIds.add(generation.generationId);
     objectNames.add(generation.objectName);
   }
-  for (const layout of Object.values(KEY_POOL_LAYOUTS)) {
-    if (
-      !isNonEmptyString(layout.layoutId) ||
-      !generationIds.has(layout.generationId) ||
-      hasNoSlots(layout.orderedSlotIds) ||
-      new Set(layout.orderedSlotIds).size !== layout.orderedSlotIds.length ||
-      layout.orderedSlotIds.some((slotId) => !isSlotId(slotId))
-    ) {
-      throw new Error("INVALID_KEY_POOL_LAYOUT");
-    }
+  const layouts = Object.values(KEY_POOL_LAYOUTS);
+  const layoutIds = new Set(layouts.map(({ layoutId }) => layoutId));
+  if (layoutIds.size !== layouts.length) throw new Error("INVALID_KEY_POOL_LAYOUT");
+  for (const layout of layouts) {
+    if (!generationIds.has(layout.generationId)) throw new Error("INVALID_KEY_POOL_LAYOUT");
+    validateLayoutMetadata(layout, layoutIds, isSlotId);
+  }
+  for (const layout of layouts) validateLayoutEvolution(layout, layouts);
+}
+
+export function validateLayoutMetadata(
+  layout: KeyPoolLayoutDefinition,
+  knownLayoutIds: ReadonlySet<string>,
+  isKnownSlotId: (slotId: string) => boolean,
+): void {
+  const slotIds = layout.slotIds;
+  const initialRingOrder = layout.initialRingOrder;
+  const insertedSlotIds = layout.insertedBeforeCursorSlotIds;
+  if (
+    !isNonEmptyString(layout.layoutId) ||
+    !isNonEmptyString(layout.generationId) ||
+    (layout.predecessorLayoutId !== null &&
+      (!isNonEmptyString(layout.predecessorLayoutId) ||
+        !knownLayoutIds.has(layout.predecessorLayoutId) ||
+        layout.predecessorLayoutId === layout.layoutId)) ||
+    !Array.isArray(slotIds) ||
+    hasNoSlots(slotIds) ||
+    new Set(slotIds).size !== slotIds.length ||
+    slotIds.some((slotId) => !isNonEmptyString(slotId) || !isKnownSlotId(slotId)) ||
+    !Array.isArray(initialRingOrder) ||
+    !sameMembers(slotIds, initialRingOrder) ||
+    !Array.isArray(insertedSlotIds) ||
+    new Set(insertedSlotIds).size !== insertedSlotIds.length ||
+    insertedSlotIds.some(
+      (slotId) => !isNonEmptyString(slotId) || !slotIds.includes(slotId),
+    ) ||
+    (layout.predecessorLayoutId === null
+      ? insertedSlotIds.length !== 0
+      : insertedSlotIds.length === 0)
+  ) {
+    throw new Error("INVALID_KEY_POOL_LAYOUT");
   }
 }
 
-function isNonEmptyString(value: string): boolean {
-  return value.trim().length > 0;
+export function validateLayoutEvolution(
+  layout: KeyPoolLayoutDefinition,
+  knownLayouts: readonly KeyPoolLayoutDefinition[],
+): void {
+  if (layout.predecessorLayoutId === null) return;
+  const predecessor = knownLayouts.find(
+    ({ layoutId }) => layoutId === layout.predecessorLayoutId,
+  );
+  if (
+    predecessor === undefined ||
+    predecessor.generationId !== layout.generationId ||
+    layout.slotIds.length !==
+      predecessor.slotIds.length + layout.insertedBeforeCursorSlotIds.length ||
+    predecessor.slotIds.some((slotId) => !layout.slotIds.includes(slotId)) ||
+    layout.insertedBeforeCursorSlotIds.some((slotId) => predecessor.slotIds.includes(slotId)) ||
+    !sameSlots(layout.initialRingOrder, [
+      ...layout.insertedBeforeCursorSlotIds,
+      ...predecessor.initialRingOrder,
+    ])
+  ) {
+    throw new Error("INVALID_KEY_POOL_LAYOUT");
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function hasNoSlots(slotIds: readonly string[]): boolean {
   return slotIds.length === 0;
+}
+
+function sameMembers(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    new Set(right).size === right.length &&
+    left.every((slotId) => right.includes(slotId))
+  );
+}
+
+function sameSlots(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((slotId, index) => right[index] === slotId);
 }

@@ -274,7 +274,10 @@ describe("local KeyPool integration", () => {
     const futureLayout = {
       layoutId: futureLayoutId,
       generationId: KEY_POOL_GENERATIONS.primary.generationId,
-      orderedSlotIds: ["key-03", "key-02", "key-01", futureSlotId],
+      predecessorLayoutId: KEY_POOL_LAYOUT_ID,
+      slotIds: [futureSlotId, "key-03", "key-02", "key-01"],
+      initialRingOrder: [futureSlotId, "key-03", "key-02", "key-01"],
+      insertedBeforeCursorSlotIds: [futureSlotId],
     } as unknown as KeyPoolLayoutDefinition;
     catalog.push({ slotId: futureSlotId, secretBinding: "WIND_API_KEY_04" });
     layouts[futureLayoutId] = futureLayout;
@@ -316,9 +319,9 @@ describe("local KeyPool integration", () => {
         currentSlotId: futureSlotId,
         lease: { leaseId: "future-live-lease", slotId: futureSlotId },
       });
-      expect(reopened.slots.at(-1)).toMatchObject({
+      expect(reopened.slots.find(({ slotId }) => slotId === futureSlotId)).toMatchObject({
         slotId: futureSlotId,
-        priority: 4,
+        priority: 1,
         state: "active",
         callCount: 7,
       });
@@ -335,7 +338,7 @@ describe("local KeyPool integration", () => {
         slots: readonly { slotId: string }[];
         lease: { slotId: string } | null;
       };
-      expect(adminStatus.slots.at(-1)?.slotId).toBe(futureSlotId);
+      expect(adminStatus.slots.some(({ slotId }) => slotId === futureSlotId)).toBe(true);
       expect(adminStatus.lease?.slotId).toBe(futureSlotId);
 
       await expect(
@@ -363,11 +366,15 @@ describe("local KeyPool integration", () => {
       expect(
         (await admin(`/admin/key-pool/slots/${futureSlotId}/disable`, {})).status,
       ).toBe(204);
-      expect((await stub.getStatus()).slots.at(-1)?.state).toBe("disabled_manual");
+      expect(
+        (await stub.getStatus()).slots.find(({ slotId }) => slotId === futureSlotId)?.state,
+      ).toBe("disabled_manual");
       expect(
         (await admin(`/admin/key-pool/slots/${futureSlotId}/restore`, {})).status,
       ).toBe(204);
-      expect((await stub.getStatus()).slots.at(-1)?.state).toBe("active");
+      expect(
+        (await stub.getStatus()).slots.find(({ slotId }) => slotId === futureSlotId)?.state,
+      ).toBe("active");
 
       expect(
         (
