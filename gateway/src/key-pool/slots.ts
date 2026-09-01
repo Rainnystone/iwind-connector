@@ -96,6 +96,18 @@ export function getKeyPoolConfiguration(layoutId: unknown): Readonly<{
   return { layout, generation };
 }
 
+export function getKeyPoolConfigurationForObject(
+  objectName: unknown,
+  activeLayoutId: unknown,
+): ReturnType<typeof getKeyPoolConfiguration> {
+  if (typeof objectName !== "string") throw new Error("INVALID_KEY_POOL_OBJECT");
+  const legacy = getKeyPoolConfiguration(LEGACY_KEY_POOL_LAYOUT_ID);
+  if (objectName === legacy.generation.objectName) return legacy;
+  const active = getKeyPoolConfiguration(activeLayoutId);
+  if (objectName !== active.generation.objectName) throw new Error("INVALID_KEY_POOL_OBJECT");
+  return active;
+}
+
 export function assertKeySlotCatalogAppendOnly(
   previous: readonly KeySlotCatalogEntry[],
   next: readonly KeySlotCatalogEntry[],

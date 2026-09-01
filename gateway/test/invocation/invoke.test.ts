@@ -527,7 +527,7 @@ describe("Wind invocation state machine", () => {
     const stub = env.KEY_POOL.getByName(
       getKeyPoolConfiguration("ring-primary-v1").generation.objectName,
     );
-    await stub.setNextTestOutcome({ slotId: "key-01", category: "network" });
+    await stub.setNextTestOutcome({ slotId: "key-03", category: "network" });
     const productionCaller = scriptedCaller([SUCCESS]);
     const realEnv = {
       KEY_POOL: env.KEY_POOL,
@@ -543,7 +543,7 @@ describe("Wind invocation state machine", () => {
       { env: realEnv, caller: productionCaller, waitUntil: consumeBackgroundPromise },
     );
     expect(production.toolResult).toBe(SUCCESS);
-    expect(productionCaller.slots).toEqual([SECRET_01]);
+    expect(productionCaller.slots).toEqual([SECRET_03]);
 
     const stagingCaller = scriptedCaller([SUCCESS]);
     const staging = await invokeWindTool(
@@ -556,8 +556,8 @@ describe("Wind invocation state machine", () => {
       },
     );
     expect(staging.toolResult).toBe(SUCCESS);
-    expect(stagingCaller.slots).toEqual([SECRET_01]);
-    await expect(stub.consumeNextTestOutcome("key-01")).resolves.toBeNull();
+    expect(stagingCaller.slots).toEqual([SECRET_03]);
+    await expect(stub.consumeNextTestOutcome("key-03")).resolves.toBeNull();
   });
 });
 
