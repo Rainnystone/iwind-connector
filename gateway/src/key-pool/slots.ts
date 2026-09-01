@@ -51,8 +51,6 @@ export const KEY_POOL_LAYOUT_ID = "ring-primary-v1";
 type ConfiguredKeySlotDefinition = (typeof KEY_SLOT_CATALOG)[number];
 type KeyPoolLayoutId = keyof typeof KEY_POOL_LAYOUTS;
 
-const SLOT_IDS: ReadonlySet<string> = new Set(KEY_SLOT_CATALOG.map(({ slotId }) => slotId));
-
 validateKeySlotCatalog(KEY_SLOT_CATALOG);
 validateKeyPoolDefinitions();
 
@@ -60,7 +58,10 @@ validateKeyPoolDefinitions();
 export const KEY_SLOT_DEFINITIONS = getKeySlotDefinitions(LEGACY_KEY_POOL_LAYOUT_ID);
 
 export function isSlotId(value: unknown): value is SlotId {
-  return typeof value === "string" && SLOT_IDS.has(value);
+  return (
+    typeof value === "string" &&
+    KEY_SLOT_CATALOG.some(({ slotId }) => slotId === value)
+  );
 }
 
 export function isSlotIdInLayout(value: unknown, layoutId: unknown): value is SlotId {
@@ -85,6 +86,7 @@ export function getKeyPoolConfiguration(layoutId: unknown): Readonly<{
   layout: KeyPoolLayoutDefinition;
   generation: KeyPoolGenerationDefinition;
 }> {
+  validateKeyPoolDefinitions();
   if (typeof layoutId !== "string" || !Object.hasOwn(KEY_POOL_LAYOUTS, layoutId)) {
     throw new Error("INVALID_KEY_POOL_LAYOUT");
   }
@@ -144,15 +146,18 @@ function validateKeySlotCatalog(catalog: readonly KeySlotCatalogEntry[]): void {
 
 function validateKeyPoolDefinitions(): void {
   const generationIds = new Set<string>();
+  const objectNames = new Set<string>();
   for (const generation of Object.values(KEY_POOL_GENERATIONS)) {
     if (
       !isNonEmptyString(generation.generationId) ||
       !isNonEmptyString(generation.objectName) ||
-      generationIds.has(generation.generationId)
+      generationIds.has(generation.generationId) ||
+      objectNames.has(generation.objectName)
     ) {
       throw new Error("INVALID_KEY_POOL_GENERATION");
     }
     generationIds.add(generation.generationId);
+    objectNames.add(generation.objectName);
   }
   for (const layout of Object.values(KEY_POOL_LAYOUTS)) {
     if (

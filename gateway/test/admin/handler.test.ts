@@ -219,22 +219,21 @@ function adminEnv(
   const calls: Array<[string, string, number]> = [];
   const objectNames: string[] = [];
   const controls: Array<{ slotId: string; category: WindFailureCategory }> = [];
+  const configuredSlots = getKeySlotDefinitions(keyPoolLayoutId);
   const stub = {
     async getStatus() {
       return {
         currentSlotId: "key-01",
-        slots: [
-          {
-            slotId: "key-01",
-            priority: 1,
-            state: "active",
-            resetAt: null,
-            cooldownUntil: null,
-            lastErrorCode: "raw-error-must-not-escape",
-            callCount: 0,
-            updatedAt: NOW,
-          },
-        ],
+        slots: configuredSlots.map(({ slotId, priority }) => ({
+          slotId,
+          priority,
+          state: "active",
+          resetAt: null,
+          cooldownUntil: null,
+          lastErrorCode: "raw-error-must-not-escape",
+          callCount: 0,
+          updatedAt: NOW,
+        })),
         lease: {
           leaseId: "lease-secret",
           requestId: "request-secret",

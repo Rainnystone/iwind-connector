@@ -6,7 +6,9 @@ import {
   getKeySlotDefinition,
   getKeySlotDefinitions,
   isSlotId,
+  KEY_POOL_GENERATIONS,
   KEY_POOL_LAYOUT_ID,
+  KEY_POOL_LAYOUTS,
   KEY_SLOT_CATALOG,
   KEY_SLOT_DEFINITIONS,
 } from "../../src/key-pool/slots";
@@ -72,6 +74,35 @@ describe("key slot manifest", () => {
       "UNKNOWN_SLOT",
     );
     expect(() => getKeyPoolConfiguration("ring-unknown-v1")).toThrow("INVALID_KEY_POOL_LAYOUT");
+  });
+
+  it("fails closed when two generations reuse one Durable Object name", () => {
+    const generations = KEY_POOL_GENERATIONS as unknown as Record<
+      string,
+      { generationId: string; objectName: string }
+    >;
+    const layouts = KEY_POOL_LAYOUTS as unknown as Record<
+      string,
+      { layoutId: string; generationId: string; orderedSlotIds: readonly ("key-01")[] }
+    >;
+    generations.duplicateObjectName = {
+      generationId: "duplicate-object-name-v3",
+      objectName: "private-key-pool-v2",
+    };
+    layouts["ring-duplicate-object-name-v1"] = {
+      layoutId: "ring-duplicate-object-name-v1",
+      generationId: "duplicate-object-name-v3",
+      orderedSlotIds: ["key-01"],
+    };
+
+    try {
+      expect(() => getKeyPoolConfiguration("ring-duplicate-object-name-v1")).toThrow(
+        "INVALID_KEY_POOL_GENERATION",
+      );
+    } finally {
+      delete layouts["ring-duplicate-object-name-v1"];
+      delete generations.duplicateObjectName;
+    }
   });
 });
 

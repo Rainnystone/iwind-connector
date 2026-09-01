@@ -217,7 +217,7 @@ describe("KeyPool SQLite Durable Object", () => {
   it.each([
     ["reorder", "ring-primary-reorder", ["key-03", "key-01", "key-02"]],
     ["middle insertion", "ring-primary-middle", ["key-03", "key-04", "key-02", "key-01"]],
-    ["removal", "ring-primary-removal", ["key-03", "key-02"]],
+    ["non-prefix removal", "ring-primary-removal", ["key-03", "key-01"]],
     ["rename", "ring-primary-rename", ["key-03", "key-02", "key-renamed"]],
   ] as const)("fails closed for same-generation %s", async (_label, layoutId, orderedSlotIds) => {
     const stub = primaryKeyPool();

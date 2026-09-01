@@ -57,12 +57,9 @@ type StoredSlotDefinitionRow = Record<string, SqlStorageValue> & {
 };
 
 export class KeyPool extends DurableObject<Cloudflare.Env> {
-  private readonly configuredSlotIds: ReadonlySet<string>;
-
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     const configuration = getKeyPoolConfigurationForObject(ctx.id.name, env.KEY_POOL_LAYOUT_ID);
-    this.configuredSlotIds = new Set(configuration.layout.orderedSlotIds);
     initializeKeyPoolSchema(
       ctx.storage,
       Date.now(),
@@ -122,7 +119,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
 
       const leaseId = crypto.randomUUID();
       const expiresAt = input.now + LEASE_TTL_MS;
-      const slotId = this.asConfiguredSlotId(slot.slot_id);
+      const slotId = this.asPersistedSlotId(slot.slot_id);
       this.writeCursor(slotId, input.now);
       this.ctx.storage.sql.exec(
         "INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at) VALUES (1, ?, ?, ?, ?)",
@@ -309,7 +306,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         "SELECT cursor_slot_id, updated_at FROM pool_state WHERE singleton = 1",
       )
       .one();
-    return this.asConfiguredSlotId(row.cursor_slot_id);
+    return this.asPersistedSlotId(row.cursor_slot_id);
   }
 
   private writeCursor(slotId: SlotId, now: number): void {
@@ -323,7 +320,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
   private advanceCursorIfCurrent(slotId: SlotId, now: number): void {
     if (this.readCursor() !== slotId) return;
     const next = nextSlotId(this.readStoredSlotDefinitions(), slotId);
-    this.writeCursor(this.asConfiguredSlotId(next), now);
+    this.writeCursor(this.asPersistedSlotId(next), now);
   }
 
   private assertStoredSlot(slotId: string): void {
@@ -347,14 +344,14 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     return definitions;
   }
 
-  private asConfiguredSlotId(value: string): SlotId {
-    if (!this.configuredSlotIds.has(value)) throw new Error("UNKNOWN_SLOT");
+  private asPersistedSlotId(value: string): SlotId {
+    this.assertStoredSlot(value);
     return value as SlotId;
   }
 
   private toSlotStatus(row: SlotRow): KeyPoolSlotStatus {
     return {
-      slotId: this.asConfiguredSlotId(row.slot_id),
+      slotId: this.asPersistedSlotId(row.slot_id),
       priority: row.priority,
       state: asSlotState(row.state),
       resetAt: row.reset_at,
@@ -371,7 +368,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       : {
           leaseId: row.lease_id,
           requestId: row.request_id,
-          slotId: this.asConfiguredSlotId(row.slot_id),
+          slotId: this.asPersistedSlotId(row.slot_id),
           expiresAt: row.expires_at,
         };
   }

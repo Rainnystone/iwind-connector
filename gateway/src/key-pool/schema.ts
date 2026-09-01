@@ -264,6 +264,7 @@ function initializeVersionedSchema(
 
     const target = configuration.targetLayout;
     if (target.layoutId === storedLayout.layoutId) return;
+    if (isStrictPrefix(target.orderedSlotIds, storedLayout.orderedSlotIds)) return;
     if (!isStrictPrefix(storedLayout.orderedSlotIds, target.orderedSlotIds)) {
       throw new Error("KEY_POOL_LAYOUT_PREFIX_REQUIRED");
     }

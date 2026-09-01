@@ -1,13 +1,22 @@
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import { env } from "cloudflare:workers";
-import { reset } from "cloudflare:test";
+import { evictDurableObject, reset, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { handleAdminRequest } from "../../src/admin/handler";
 import type { WindFailureCategory } from "../../src/errors/types";
 import { invokeWindTool } from "../../src/invocation/invoke";
 import type { WindToolCaller } from "../../src/invocation/types";
-import { KEY_POOL_LAYOUT_ID, getKeyPoolConfiguration } from "../../src/key-pool/slots";
+import { initializeKeyPoolSchema } from "../../src/key-pool/schema";
+import {
+  KEY_POOL_GENERATIONS,
+  KEY_POOL_LAYOUT_ID,
+  KEY_POOL_LAYOUTS,
+  KEY_SLOT_CATALOG,
+  getKeyPoolConfiguration,
+  type KeyPoolLayoutDefinition,
+  type KeySlotCatalogEntry,
+} from "../../src/key-pool/slots";
 import { WindCallFailure } from "../../src/upstream/call-tool";
 
 const ADMIN_TOKEN = "task-10-independent-admin";
@@ -23,6 +32,7 @@ const SUCCESS: CallToolResult = {
   content: [{ type: "text", text: "synthetic-success" }],
   isError: false,
 };
+const FUTURE_BASE_TIME = Date.UTC(2042, 0, 1, 0, 0, 0);
 
 afterEach(async () => {
   await reset();
@@ -253,6 +263,130 @@ describe("local KeyPool integration", () => {
       expect(response.status).toBe(expectedStatus);
     }
   });
+
+  it("uses an activated successor layout as authority after rollback to its expand candidate", async () => {
+    const stub = activeKeyPool();
+    await stub.getStatus();
+    const futureLayoutId = "ring-primary-future-v2";
+    const futureSlotId = "key-04";
+    const catalog = KEY_SLOT_CATALOG as unknown as KeySlotCatalogEntry[];
+    const layouts = KEY_POOL_LAYOUTS as unknown as Record<string, KeyPoolLayoutDefinition>;
+    const futureLayout = {
+      layoutId: futureLayoutId,
+      generationId: KEY_POOL_GENERATIONS.primary.generationId,
+      orderedSlotIds: ["key-03", "key-02", "key-01", futureSlotId],
+    } as unknown as KeyPoolLayoutDefinition;
+    catalog.push({ slotId: futureSlotId, secretBinding: "WIND_API_KEY_04" });
+    layouts[futureLayoutId] = futureLayout;
+
+    try {
+      await runInDurableObject(stub, (_instance, state) => {
+        initializeKeyPoolSchema(state.storage, FUTURE_BASE_TIME, {
+          catalog,
+          generation: KEY_POOL_GENERATIONS.primary,
+          targetLayout: futureLayout,
+          knownLayouts: Object.values(layouts),
+          preserveLegacySchema: false,
+        });
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            `UPDATE slots SET call_count = 7, updated_at = ? WHERE slot_id = ?`,
+            FUTURE_BASE_TIME + 1,
+            futureSlotId,
+          );
+          state.storage.sql.exec(
+            `UPDATE pool_state SET cursor_slot_id = ?, updated_at = ? WHERE singleton = 1`,
+            futureSlotId,
+            FUTURE_BASE_TIME + 1,
+          );
+          state.storage.sql.exec(
+            `INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at)
+             VALUES (1, 'future-live-lease', 'future-request', ?, ?)`,
+            futureSlotId,
+            FUTURE_BASE_TIME + 60_000,
+          );
+        });
+      });
+      const beforeRollbackReopen = await versionedSnapshot(stub);
+
+      await evictDurableObject(stub);
+
+      const reopened = await stub.getStatus();
+      expect(reopened).toMatchObject({
+        currentSlotId: futureSlotId,
+        lease: { leaseId: "future-live-lease", slotId: futureSlotId },
+      });
+      expect(reopened.slots.at(-1)).toMatchObject({
+        slotId: futureSlotId,
+        priority: 4,
+        state: "active",
+        callCount: 7,
+      });
+      expect(await versionedSnapshot(stub)).toEqual(beforeRollbackReopen);
+
+      const statusResponse = await handleAdminRequest(
+        new Request("https://gateway.test/admin/key-pool", {
+          headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+        }),
+        adminEnvironment(),
+      );
+      expect(statusResponse.status).toBe(200);
+      const adminStatus = (await statusResponse.json()) as {
+        slots: readonly { slotId: string }[];
+        lease: { slotId: string } | null;
+      };
+      expect(adminStatus.slots.at(-1)?.slotId).toBe(futureSlotId);
+      expect(adminStatus.lease?.slotId).toBe(futureSlotId);
+
+      await expect(
+        stub.acquireLease({
+          requestId: "future-live-lease-overlap",
+          attemptedSlotIds: [],
+          now: FUTURE_BASE_TIME + 2,
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "GATEWAY_BUSY" });
+      const acquired = await stub.acquireLease({
+        requestId: "future-tail-acquire",
+        attemptedSlotIds: [],
+        now: FUTURE_BASE_TIME + 60_000,
+      });
+      expect(acquired).toMatchObject({ ok: true, slotId: futureSlotId });
+      if (!acquired.ok) throw new Error("fixture-future-tail-not-acquired");
+      await stub.reportOutcome({
+        leaseId: acquired.leaseId,
+        slotId: acquired.slotId,
+        category: "success",
+        resetAt: null,
+        occurredAt: FUTURE_BASE_TIME + 60_001,
+      });
+
+      expect(
+        (await admin(`/admin/key-pool/slots/${futureSlotId}/disable`, {})).status,
+      ).toBe(204);
+      expect((await stub.getStatus()).slots.at(-1)?.state).toBe("disabled_manual");
+      expect(
+        (await admin(`/admin/key-pool/slots/${futureSlotId}/restore`, {})).status,
+      ).toBe(204);
+      expect((await stub.getStatus()).slots.at(-1)?.state).toBe("active");
+
+      expect(
+        (
+          await admin("/admin/test-controls/next-outcome", {
+            slotId: futureSlotId,
+            category: "daily_quota",
+            times: 1,
+          })
+        ).status,
+      ).toBe(204);
+      await expect(stub.consumeNextTestOutcome(futureSlotId as never)).resolves.toBe(
+        "daily_quota",
+      );
+    } finally {
+      delete layouts[futureLayoutId];
+      const futureCatalogIndex = catalog.findIndex(({ slotId }) => slotId === futureSlotId);
+      if (futureCatalogIndex >= 0) catalog.splice(futureCatalogIndex, 1);
+    }
+  });
 });
 
 function dependencies(caller: WindToolCaller) {
@@ -298,13 +432,31 @@ async function admin(path: string, body: object): Promise<Response> {
       },
       body: JSON.stringify(body),
     }),
-    {
-      ADMIN_TOKEN,
-      DEPLOYMENT_STAGE: "staging",
-      KEY_POOL: env.KEY_POOL,
-      KEY_POOL_LAYOUT_ID,
-    },
+    adminEnvironment(),
   );
+}
+
+function adminEnvironment() {
+  return {
+    ADMIN_TOKEN,
+    DEPLOYMENT_STAGE: "staging" as const,
+    KEY_POOL: env.KEY_POOL,
+    KEY_POOL_LAYOUT_ID,
+  };
+}
+
+async function versionedSnapshot(stub: ReturnType<typeof activeKeyPool>) {
+  return runInDurableObject(stub, (_instance, state) => ({
+    slots: state.storage.sql.exec("SELECT * FROM slots ORDER BY priority").toArray(),
+    lease: state.storage.sql.exec("SELECT * FROM lease").toArray(),
+    cursor: state.storage.sql.exec("SELECT * FROM pool_state").toArray(),
+    manifest: state.storage.sql.exec("SELECT * FROM pool_manifest").toArray(),
+    outcomes: state.storage.sql.exec("SELECT * FROM pending_test_outcome").toArray(),
+    markers: state.storage.sql.exec("SELECT * FROM oauth_replay_marker ORDER BY marker_id").toArray(),
+    versions: state.storage.sql
+      .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
+      .toArray(),
+  }));
 }
 
 async function slotState(slotId: "key-01" | "key-02" | "key-03"): Promise<string | undefined> {
