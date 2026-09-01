@@ -439,6 +439,42 @@ describe("KeyPool SQLite Durable Object", () => {
   });
 
   it.each([
+    ["markers [2,3]", "DELETE FROM _key_pool_schema_migrations WHERE version = 1"],
+    ["markers [1,3]", "DELETE FROM _key_pool_schema_migrations WHERE version = 2"],
+    ["only marker [3]", "DELETE FROM _key_pool_schema_migrations WHERE version < 3"],
+  ] as const)("rejects primary schema with %s without mutating persisted state", async (_label, sql) => {
+    const stub = primaryKeyPool();
+    const lease = await acquireLease(stub, `damaged-schema-${_label}`, BASE_TIME);
+    if (!lease.ok) throw new Error("fixture-lease-not-acquired");
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        state.storage.sql.exec(
+          `UPDATE slots SET state = 'disabled_balance', last_error_code = 'balance',
+             call_count = 11, updated_at = ? WHERE slot_id = 'key-02'`,
+          BASE_TIME - 1,
+        );
+        state.storage.sql.exec(sql);
+      });
+    });
+    const before = await versionedPersistenceSnapshot(stub);
+
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME + 1,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_KEY_POOL_SCHEMA");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(before);
+  });
+
+  it.each([
     [
       "a too-new schema marker",
       (sql: SqlStorage) =>
@@ -1264,6 +1300,18 @@ async function legacyPersistenceSnapshot(stub: ReturnType<typeof keyPool>) {
     markers: state.storage.sql
       .exec("SELECT * FROM oauth_replay_marker ORDER BY marker_id")
       .toArray(),
+    versions: state.storage.sql
+      .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
+      .toArray(),
+  }));
+}
+
+async function versionedPersistenceSnapshot(stub: ReturnType<typeof primaryKeyPool>) {
+  return runInDurableObject(stub, (_instance, state) => ({
+    slots: state.storage.sql.exec("SELECT * FROM slots ORDER BY priority").toArray(),
+    lease: state.storage.sql.exec("SELECT * FROM lease").toArray(),
+    cursor: state.storage.sql.exec("SELECT * FROM pool_state").toArray(),
+    manifest: state.storage.sql.exec("SELECT * FROM pool_manifest").toArray(),
     versions: state.storage.sql
       .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
       .toArray(),

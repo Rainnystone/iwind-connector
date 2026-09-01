@@ -233,9 +233,11 @@ function initializeVersionedSchema(
       return;
     }
 
-    const currentVersion = readSchemaVersion(sql);
-    if (currentVersion > 3) throw new Error("KEY_POOL_SCHEMA_TOO_NEW");
-    if (currentVersion !== 3) throw new Error("INVALID_KEY_POOL_SCHEMA");
+    const schemaVersions = readSchemaVersions(sql);
+    if (schemaVersions.some((version) => version > 3)) {
+      throw new Error("KEY_POOL_SCHEMA_TOO_NEW");
+    }
+    if (!sameVersions(schemaVersions, [1, 2, 3])) throw new Error("INVALID_KEY_POOL_SCHEMA");
 
     const manifest = sql
       .exec<
@@ -480,6 +482,15 @@ function readSchemaVersion(sql: SqlStorage): number {
     .one().version;
 }
 
+function readSchemaVersions(sql: SqlStorage): readonly number[] {
+  return sql
+    .exec<Record<string, SqlStorageValue> & { version: number }>(
+      "SELECT version FROM _key_pool_schema_migrations ORDER BY version",
+    )
+    .toArray()
+    .map(({ version }) => version);
+}
+
 function readTableNames(sql: SqlStorage): Set<string> {
   return new Set(
     sql
@@ -497,6 +508,10 @@ function isStrictPrefix(previous: readonly string[], next: readonly string[]): b
 
 function sameSlots(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((slotId, index) => right[index] === slotId);
+}
+
+function sameVersions(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((version, index) => right[index] === version);
 }
 
 function isNonEmptyString(value: string): boolean {
