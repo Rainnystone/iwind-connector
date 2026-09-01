@@ -131,6 +131,8 @@ Restrict the file to its owner. Do not paste real values into source files, Mark
 
 Cloudflare deployment also requires the Secret binding names listed in `gateway/wrangler.jsonc` under `secrets.required`. Supply their values through approved protected input; never replace the checked-in safe sentinels with production values.
 
+For an approved deployment, use the complete owner-only Cloudflare Secret file described in [installation](docs/installation.md): an existing Worker receives an un-deployed `versions upload` candidate, names-only inspection, then an explicit exact `@100%` deployment; first creation uses one complete `deploy --secrets-file`. Do not use per-binding `secret put`, because it immediately deploys a version.
+
 ### 3. Verify the checkout
 
 Run from the repository root:

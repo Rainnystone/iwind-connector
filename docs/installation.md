@@ -11,7 +11,7 @@ Creating or changing Cloudflare resources, Access/OAuth policy, public endpoints
 - Node.js `>=24.13.1`, matching `package.json`.
 - Dependencies installed from the committed lockfile with `npm ci`; do not update dependencies as part of installation.
 - For gateway deployment only: an authenticated Cloudflare account with Workers, Durable Objects, KV, and the intended Access/OIDC application already reviewed by a human.
-- A private workspace file at `../.secrets/iwind.keys.env`. Keep it outside this delivery directory and restrict it to its owner.
+- Owner-only private workspace files at `../.secrets/iwind.keys.env` and `../.secrets/iwind.cloudflare.env`. Keep both outside this delivery directory with mode `600`.
 
 ## Verify and package
 
@@ -75,13 +75,28 @@ The checked-in `gateway/wrangler.jsonc` is the source configuration and retains 
    node -e 'const fs=require("node:fs");const c=JSON.parse(fs.readFileSync("gateway/wrangler.jsonc","utf8"));for(const name of c.secrets.required)console.log(name)'
    ```
 
-4. For each listed name, use Wrangler's interactive prompt so the value never appears in command arguments:
+4. Prepare the complete owner-only `../.secrets/iwind.cloudflare.env` file with every required binding. Do not print, copy, or pass any value as a command argument. The names-only list above is the sole public inventory; the file must remain mode `600`.
+5. **For an existing Worker**, create an un-deployed candidate version from the complete file, then inspect its binding names and candidate identity without exposing values:
 
    ```bash
-   npx --no-install wrangler secret put NAME_FROM_REQUIRED_LIST --config dist/wrangler.deploy.jsonc
+   npx --no-install wrangler versions upload \
+     --config dist/wrangler.deploy.jsonc \
+     --secrets-file ../.secrets/iwind.cloudflare.env
    ```
 
-5. Re-run the full verification and Secret scan. Inspect `dist/wrangler.deploy.jsonc`; it may contain only the approved Worker name, KV ID, public origin, and stage changes.
-6. Only after separate human approval to deploy, run `npx --no-install wrangler deploy --config dist/wrangler.deploy.jsonc`. This repository's `npm run build` remains a dry run and is safe for the pre-deploy gate.
+   Re-run the full verification and Secret scan, inspect `dist/wrangler.deploy.jsonc`, and perform names-only candidate inspection. After a separate cutover approval, deploy that exact candidate at 100% with no percentage split:
+
+   ```bash
+   npx --no-install wrangler versions deploy <candidate>@100%
+   ```
+6. **For the first Worker creation only**, make one complete approved deployment instead of uploading a partial version:
+
+   ```bash
+   npx --no-install wrangler deploy \
+     --config dist/wrangler.deploy.jsonc \
+     --secrets-file ../.secrets/iwind.cloudflare.env
+   ```
+
+   `wrangler secret put` creates and immediately deploys a new version. It is not a safe per-binding or complete-deployment path for this runbook.
 
 Deployment completion requires an operator-owned check of the public HTTPS origin, OAuth authorization, one representative read-only MCP call, and the key-pool status. This project has no write or trading actions.

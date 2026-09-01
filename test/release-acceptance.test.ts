@@ -61,6 +61,28 @@ describe("runtime-neutral release acceptance contract", () => {
     expect(checklist).toMatch(/Skill upload[^\n]+not yet verified/iu);
     expect(checklist).toMatch(/Grok Web[^\n]+not tested/iu);
   });
+
+  it("keeps deployment documentation on complete-secret candidate versions", async () => {
+    const [installation, security, operations, troubleshooting, checklist] = await Promise.all([
+      readFile(path.join(ROOT, "docs", "installation.md"), "utf8"),
+      readFile(path.join(ROOT, "docs", "security.md"), "utf8"),
+      readFile(path.join(ROOT, "docs", "operations.md"), "utf8"),
+      readFile(path.join(ROOT, "docs", "troubleshooting.md"), "utf8"),
+      readFile(path.join(ROOT, "docs", "acceptance-checklist.md"), "utf8"),
+    ]);
+
+    expect(installation).toContain("wrangler versions upload");
+    expect(installation).toContain("--secrets-file ../.secrets/iwind.cloudflare.env");
+    expect(installation).toContain("wrangler versions deploy <candidate>@100%");
+    expect(installation).toContain("wrangler deploy");
+    expect(security).toMatch(/secret put[^\n]+immediately deploy/iu);
+    expect(operations).toContain("persisted manifest is the runtime authority");
+    expect(operations).toContain("expand candidate can read the persisted successor layout");
+    expect(troubleshooting).toContain("complete owner-only Secret file");
+    expect(checklist).toContain("versions upload");
+    expect(checklist).toContain("candidate@100%");
+    expect(checklist).not.toContain("wrangler secret put NAME_FROM_REQUIRED_LIST");
+  });
 });
 
 async function recursiveFiles(directory: string): Promise<string[]> {

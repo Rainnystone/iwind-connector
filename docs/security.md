@@ -8,9 +8,9 @@ The supported action surface is read-only data retrieval. Write and trading acti
 
 ## Secret handling
 
-- Keep private local values in `../.secrets/iwind.keys.env`, outside this delivery directory, and in Cloudflare Secret bindings. Restrict local file permissions to the owner.
+- Keep private local values in `../.secrets/iwind.keys.env` and the complete Cloudflare candidate file in `../.secrets/iwind.cloudflare.env`, outside this delivery directory with mode `600`. Cloudflare receives the complete file only during an approved candidate upload or first creation.
 - Pass only the Secret file path to `npm run secret:scan -- --secrets-file …`. The scanner reads values for exact byte comparison and emits only relative locations and stable rule IDs.
-- Use Wrangler's interactive `secret put` prompt. Secret values do not belong in command arguments, source/config files, tests, fixtures, Markdown, chat, screenshots, deployment JSON, zip archives, or logs.
+- For an existing Worker, use complete-file `wrangler versions upload --secrets-file …`, inspect the candidate by names only, then explicitly deploy the exact candidate at `@100%`; never percentage-split a KeyPool deployment. First creation uses one complete `wrangler deploy --secrets-file …`. `wrangler secret put` creates and immediately deploys a version, so it is not part of this runbook. Secret values do not belong in command arguments, source/config files, tests, fixtures, Markdown, chat, screenshots, deployment JSON, zip archives, or logs.
 - The current required-binding set has 13 names. `WIND_API_KEY_03` is only a binding name; it never authorizes documenting or exposing the corresponding value.
 - `gateway/.dev.vars.example` contains local sentinels only. Real `.dev.vars`, `.dev.vars.*` other than the example, and `.secrets/` paths fail the scanner.
 - Treat generated archives as untrusted until both deterministic packaging tests and the Secret scan pass.

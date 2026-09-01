@@ -7,7 +7,7 @@
 - Slot states and transitions: `gateway/src/key-pool/key-pool.ts`.
 - Upstream schema snapshot: `gateway/src/contracts/tool-manifest.json` plus its `.sha256`, verified by `npm run contract:verify`.
 
-The active primary generation has the stable catalog `key-01`, `key-02`, `key-03` and the active layout `key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is derived from a layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout.
+The active primary generation has the stable catalog `key-01`, `key-02`, `key-03` and the active layout `key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is derived from a layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout. The persisted manifest is the runtime authority for an activated versioned object: admin, test-control, lease, cursor, and acquisition resolve its persisted layout rather than treating the environment's active-layout ID as a replacement for stored state. Generation IDs and Durable Object names are each unique.
 
 This code is not deployed to Cloudflare production yet. Production remains on the old two-slot generation until the feature PR is merged and a separately approved Task 5 cutover is performed. Do not treat a local primary-layout test as a completed deployment.
 
@@ -27,14 +27,17 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
 
 1. Inspect the pool and identify the binding/slot pair from the mapping above.
 2. Disable that slot through the admin request contract. Confirm its state is `disabled_manual` before changing the binding.
-3. Update the matching entry in the private `../.secrets/iwind.keys.env` with a Secret-aware editor. Do not copy its value into Markdown, chat, a command argument, or a log.
-4. Update the Cloudflare binding through the interactive prompt:
+3. Update the matching entry in both owner-only private files, `../.secrets/iwind.keys.env` and the complete `../.secrets/iwind.cloudflare.env`, with a Secret-aware editor. Do not copy its value into Markdown, chat, a command argument, or a log.
+4. For an existing Worker, render the approved deploy config, create one complete Secret-file candidate, perform names-only inspection, then explicitly deploy the exact candidate at 100%:
 
    ```bash
-   npx --no-install wrangler secret put WIND_API_KEY_01 --config dist/wrangler.deploy.jsonc
+   npx --no-install wrangler versions upload \
+     --config dist/wrangler.deploy.jsonc \
+     --secrets-file ../.secrets/iwind.cloudflare.env
+   npx --no-install wrangler versions deploy <candidate>@100%
    ```
 
-   Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
+   Never percentage-split or use `wrangler secret put`: it creates and immediately deploys a version. Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
 5. Run `npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'`. A pass proves the current exact values do not occur in delivery source or the packaged Skill.
 6. Restore the slot, then inspect status again. Restore changes state only; it does not validate the replacement. Complete the change with one approved representative read-only call and confirm the slot returns to normal operation without a failure notice.
 
@@ -53,10 +56,10 @@ The catalog is append-only. A same-generation prefix append preserves every exis
 This is an engineering and approved deployment action, not a live admin action.
 
 1. Obtain human approval for the new tail slot, its Secret binding, and the rollout. Append the catalog identity/binding, define a candidate layout whose existing ordered slots are an exact prefix, and update the required binding names, tests, and documentation. `key-04` and then `key-05` are ordinary examples; neither becomes primary automatically.
-2. Build and verify the **expand candidate**. It must recognize the expanded catalog, candidate layout, and Secret binding, while `KEY_POOL_LAYOUT_ID` still selects the old active layout. Upload or deploy it only under the approval boundary; do not activate the candidate layout yet.
-3. Verify the expand candidate against its unchanged active layout, including Secret-free scans and the relevant schema/layout tests. Keep this candidate available: once activation succeeds, it is the minimum safe rollback target because it already recognizes the new layout.
+2. Build and verify the **expand candidate**. It must recognize the expanded catalog, candidate layout, and Secret binding, while `KEY_POOL_LAYOUT_ID` still selects the old active layout. Upload it through the complete-file candidate path only; do not activate the candidate layout yet.
+3. Verify the expand candidate against its unchanged active layout, including Secret-free scans and the relevant schema/layout tests. Keep this candidate available: once activation succeeds, it is the minimum safe rollback target because it already recognizes the new layout and can read the persisted successor layout.
 4. Build and verify the **activate candidate** with `KEY_POOL_LAYOUT_ID` changed to the approved strict-prefix layout. Activate it only after a separate cutover approval and validate its persisted manifest, slot states, cursor, lease behavior, unchanged MCP URL, 31 tools, OAuth, notices, and strict serialization.
-5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision. Record identifiers in the private deployment record, never in this public runbook.
+5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision; the expand candidate can read the persisted successor layout while its environment active ID remains old. Unknown or non-prefix persisted layouts fail closed. Record identifiers in the private deployment record, never in this public runbook.
 
 ## Disable or restore a Key
 
