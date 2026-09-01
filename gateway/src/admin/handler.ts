@@ -1,12 +1,12 @@
 import { authenticateAdmin } from "./authenticate";
-import { isSlotId } from "../key-pool/slots";
+import { getKeyPoolConfiguration, isSlotId } from "../key-pool/slots";
 import type { SlotId } from "../key-pool/types";
 import { hasExactKeys, parseTestControl } from "./test-control";
 
 const TEST_CONTROL_PATH = "/admin/test-controls/next-outcome";
 const MAX_ADMIN_BODY_BYTES = 4096;
 
-type AdminEnvironment = Pick<Cloudflare.Env, "ADMIN_TOKEN" | "KEY_POOL"> & {
+type AdminEnvironment = Pick<Cloudflare.Env, "ADMIN_TOKEN" | "KEY_POOL" | "KEY_POOL_LAYOUT_ID"> & {
   readonly DEPLOYMENT_STAGE: "local" | "staging" | "production";
 };
 
@@ -38,7 +38,9 @@ export async function handleAdminRequest(
   }
   if (authentication === "rejected") return new Response("Forbidden", { status: 403 });
 
-  const keyPool = env.KEY_POOL.getByName("private-key-pool");
+  const keyPool = env.KEY_POOL.getByName(
+    getKeyPoolConfiguration(env.KEY_POOL_LAYOUT_ID).generation.objectName,
+  );
   if (route.kind === "status") {
     const status = await keyPool.getStatus();
     return Response.json(

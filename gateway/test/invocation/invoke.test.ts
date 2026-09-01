@@ -14,11 +14,15 @@ import { createWindToolCaller, WindCallFailure } from "../../src/upstream/call-t
 import { MAX_ERROR_ENVELOPE_BYTES } from "../../src/upstream/result-limit";
 import { emitLogEvent } from "../../src/logging/event";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../../src/key-pool/types";
-import { KEY_SLOT_DEFINITIONS } from "../../src/key-pool/slots";
+import {
+  getKeyPoolConfiguration,
+  getKeySlotDefinitions,
+} from "../../src/key-pool/slots";
 
 const NOW = 1_700_000_000_000;
 const SECRET_01 = "unit-secret-one";
 const SECRET_02 = "unit-secret-two";
+const SECRET_03 = "unit-secret-three";
 const REQUEST: InvocationRequest = {
   requestId: "request-01",
   toolName: "get_stock_quote",
@@ -41,13 +45,14 @@ describe("Wind invocation state machine", () => {
     const invocationEnv = dependencies(scriptedPool([]), scriptedCaller([])).env;
 
     expect(
-      KEY_SLOT_DEFINITIONS.map((definition) => [
+      getKeySlotDefinitions("ring-primary-v1").map((definition) => [
         definition.slotId,
         resolveWindSecret(invocationEnv, definition.slotId),
       ]),
     ).toEqual([
-      ["key-01", SECRET_01],
+      ["key-03", SECRET_03],
       ["key-02", SECRET_02],
+      ["key-01", SECRET_01],
     ]);
     expect(() =>
       Reflect.apply(resolveWindSecret, undefined, [invocationEnv, "future-slot"]),
@@ -66,6 +71,31 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports).toEqual([
       report("lease-01", "key-01", "success", null, NOW),
     ]);
+  });
+
+  it("routes business invocation through the active generation object", async () => {
+    const objectNames: string[] = [];
+    const caller = scriptedCaller([SUCCESS]);
+    const invocationEnv = {
+      KEY_POOL: {
+        getByName(objectName: string) {
+          objectNames.push(objectName);
+          return env.KEY_POOL.getByName(objectName);
+        },
+      },
+      WIND_API_KEY_01: SECRET_01,
+      WIND_API_KEY_02: SECRET_02,
+      WIND_API_KEY_03: SECRET_03,
+      KEY_POOL_LAYOUT_ID: "ring-primary-v1",
+    } as never;
+
+    const result = await invokeWindTool(
+      { ...REQUEST, requestId: "active-generation-route" },
+      { env: invocationEnv, caller, waitUntil: consumeBackgroundPromise },
+    );
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(objectNames).toEqual(["private-key-pool-v2", "private-key-pool-v2"]);
   });
 
   it("routes a 200 isError exact daily envelope to key-02 and reports a successful rotation", async () => {
@@ -474,6 +504,8 @@ describe("Wind invocation state machine", () => {
       KEY_POOL: env.KEY_POOL,
       WIND_API_KEY_01: SECRET_01,
       WIND_API_KEY_02: SECRET_02,
+      WIND_API_KEY_03: SECRET_03,
+      KEY_POOL_LAYOUT_ID: "ring-primary-v1",
     };
 
     const results = await Promise.all([
@@ -492,13 +524,17 @@ describe("Wind invocation state machine", () => {
   });
 
   it("keeps a pending staging control dormant in production and consumes it once in staging", async () => {
-    const stub = env.KEY_POOL.getByName("private-key-pool");
+    const stub = env.KEY_POOL.getByName(
+      getKeyPoolConfiguration("ring-primary-v1").generation.objectName,
+    );
     await stub.setNextTestOutcome({ slotId: "key-01", category: "network" });
     const productionCaller = scriptedCaller([SUCCESS]);
     const realEnv = {
       KEY_POOL: env.KEY_POOL,
       WIND_API_KEY_01: SECRET_01,
       WIND_API_KEY_02: SECRET_02,
+      WIND_API_KEY_03: SECRET_03,
+      KEY_POOL_LAYOUT_ID: "ring-primary-v1",
       DEPLOYMENT_STAGE: "production",
     };
 
@@ -531,6 +567,8 @@ function dependencies(pool: ScriptedPool, caller: WindToolCaller) {
       KEY_POOL: env.KEY_POOL,
       WIND_API_KEY_01: SECRET_01,
       WIND_API_KEY_02: SECRET_02,
+      WIND_API_KEY_03: SECRET_03,
+      KEY_POOL_LAYOUT_ID: "ring-primary-v1",
     },
     waitUntil: consumeBackgroundPromise,
     keyPool: pool satisfies InvocationKeyPool,

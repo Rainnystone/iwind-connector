@@ -54,11 +54,20 @@ describe("independent admin surface", () => {
       ["disable", "key-01", NOW],
       ["restore", "key-01", NOW + 1],
     ]);
+    expect(fixture.objectNames).toEqual([
+      "private-key-pool-v2",
+      "private-key-pool-v2",
+      "private-key-pool-v2",
+    ]);
   });
 
   it("accepts restore and disable routes for every manifest slot", async () => {
     const fixture = adminEnv("staging");
-    for (const definition of KEY_SLOT_DEFINITIONS) {
+    const activeDefinitions = [
+      { slotId: "key-03" },
+      ...KEY_SLOT_DEFINITIONS,
+    ];
+    for (const definition of activeDefinitions) {
       await expect(
         handleAdminRequest(
           adminRequest(`/admin/key-pool/slots/${definition.slotId}/disable`, "POST", {}),
@@ -75,7 +84,7 @@ describe("independent admin surface", () => {
       ).resolves.toMatchObject({ status: 204 });
     }
     expect(fixture.calls).toEqual(
-      KEY_SLOT_DEFINITIONS.flatMap(({ slotId }) => [
+      activeDefinitions.flatMap(({ slotId }) => [
         ["disable", slotId, NOW],
         ["restore", slotId, NOW + 1],
       ]),
@@ -162,6 +171,7 @@ function adminRequest(path: string, method = "GET", body?: object): Request {
 
 function adminEnv(stage: "local" | "staging" | "production") {
   const calls: Array<[string, string, number]> = [];
+  const objectNames: string[] = [];
   const controls: Array<{ slotId: string; category: WindFailureCategory }> = [];
   const stub = {
     async getStatus() {
@@ -200,9 +210,16 @@ function adminEnv(stage: "local" | "staging" | "production") {
   return {
     ADMIN_TOKEN,
     DEPLOYMENT_STAGE: stage,
-    KEY_POOL: { getByName: () => stub },
+    KEY_POOL: {
+      getByName: (objectName: string) => {
+        objectNames.push(objectName);
+        return stub;
+      },
+    },
+    KEY_POOL_LAYOUT_ID: "ring-primary-v1",
     calls,
     controls,
+    objectNames,
   } as never as Cloudflare.Env & {
     calls: typeof calls;
     controls: typeof controls;

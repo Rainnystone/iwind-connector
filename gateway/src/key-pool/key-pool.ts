@@ -2,7 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { WindFailureCategory } from "../errors/types";
 import { nextSlotId, orderSlotRing } from "./slot-ring";
-import { isSlotId, KEY_SLOT_DEFINITIONS } from "./slots";
+import {
+  LEGACY_KEY_POOL_LAYOUT_ID,
+  KEY_SLOT_DEFINITIONS,
+  isSlotIdInLayout,
+} from "./slots";
 import { initializeKeyPoolSchema } from "./schema";
 import type {
   AcquireLeaseResult,
@@ -427,7 +431,7 @@ function assertAcquireLeaseInput(input: AcquireLeaseInput): void {
   if (
     !Array.isArray(input.attemptedSlotIds) ||
     input.attemptedSlotIds.length > KEY_SLOT_DEFINITIONS.length ||
-    input.attemptedSlotIds.some((slotId) => !isSlotId(slotId)) ||
+    input.attemptedSlotIds.some((slotId) => !isSlotIdInLayout(slotId, LEGACY_KEY_POOL_LAYOUT_ID)) ||
     new Set(input.attemptedSlotIds).size !== input.attemptedSlotIds.length
   ) {
     throw new Error("INVALID_ATTEMPTED_SLOTS");
@@ -443,7 +447,7 @@ function assertOAuthReplayMarkerInput(input: OAuthReplayMarkerInput): void {
 }
 
 function assertSlotId(value: string): asserts value is SlotId {
-  if (!isSlotId(value)) throw new Error("UNKNOWN_SLOT");
+  if (!isSlotIdInLayout(value, LEGACY_KEY_POOL_LAYOUT_ID)) throw new Error("UNKNOWN_SLOT");
 }
 
 function isOutcomeCategory(value: unknown): value is ReportOutcomeInput["category"] {

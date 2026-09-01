@@ -37,7 +37,7 @@ export interface InvocationKeyPool {
   consumeTestOutcome?(slotId: SlotId): Promise<Exclude<ReportOutcomeInput["category"], "success"> | null>;
 }
 
-export type InvocationEnvironment = Pick<Cloudflare.Env, "KEY_POOL"> & {
+export type InvocationEnvironment = Pick<Cloudflare.Env, "KEY_POOL" | "KEY_POOL_LAYOUT_ID"> & {
   readonly [Binding in WindSecretBindingName]: string | undefined;
 } & {
   readonly DEPLOYMENT_STAGE?: string;

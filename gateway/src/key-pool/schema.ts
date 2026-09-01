@@ -1,5 +1,9 @@
 import { nextSlotId } from "./slot-ring";
-import { isSlotId, KEY_SLOT_DEFINITIONS } from "./slots";
+import {
+  LEGACY_KEY_POOL_LAYOUT_ID,
+  KEY_SLOT_DEFINITIONS,
+  isSlotIdInLayout,
+} from "./slots";
 
 const CREATE_SLOTS = `
   CREATE TABLE IF NOT EXISTS slots (
@@ -124,7 +128,7 @@ export function initializeKeyPoolSchema(storage: DurableObjectStorage, now: numb
           "SELECT cursor_slot_id FROM pool_state WHERE singleton = 1",
         )
         .toArray()[0]?.cursor_slot_id;
-      if (storedCursor === undefined || !isSlotId(storedCursor)) {
+      if (storedCursor === undefined || !isSlotIdInLayout(storedCursor, LEGACY_KEY_POOL_LAYOUT_ID)) {
         throw new Error("INVALID_STORED_POOL_CURSOR");
       }
     }
@@ -162,13 +166,15 @@ function chooseLegacyCursor(sql: SqlStorage, now: number): string {
       now,
     )
     .toArray()[0];
-  if (liveLease !== undefined && isSlotId(liveLease.slot_id)) return liveLease.slot_id;
+  if (liveLease !== undefined && isSlotIdInLayout(liveLease.slot_id, LEGACY_KEY_POOL_LAYOUT_ID)) {
+    return liveLease.slot_id;
+  }
 
   const slots = sql.exec<LegacySlotRow>("SELECT * FROM slots ORDER BY priority ASC").toArray();
   const currentUsable = slots.find(
     ({ state }) => state === "active" || state === "cooldown",
   );
-  if (currentUsable !== undefined && isSlotId(currentUsable.slot_id)) {
+  if (currentUsable !== undefined && isSlotIdInLayout(currentUsable.slot_id, LEGACY_KEY_POOL_LAYOUT_ID)) {
     return currentUsable.slot_id;
   }
 
@@ -182,7 +188,7 @@ function chooseLegacyCursor(sql: SqlStorage, now: number): string {
     const latest = [...slots].sort(
       (left, right) => right.updated_at - left.updated_at || right.priority - left.priority,
     )[0];
-    if (latest !== undefined && isSlotId(latest.slot_id)) {
+    if (latest !== undefined && isSlotIdInLayout(latest.slot_id, LEGACY_KEY_POOL_LAYOUT_ID)) {
       return nextSlotId(KEY_SLOT_DEFINITIONS, latest.slot_id);
     }
   }

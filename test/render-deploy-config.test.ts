@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { KEY_SLOT_DEFINITIONS } from "../gateway/src/key-pool/slots";
+import { KEY_SLOT_CATALOG } from "../gateway/src/key-pool/slots";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "render-deploy-config.ts");
@@ -22,6 +22,8 @@ const VALID_ARGS = [
   "https://iwind.example.invalid",
   "--deployment-stage",
   "staging",
+  "--key-pool-layout-id",
+  "ring-primary-v1",
 ] as const;
 
 function runRender(args: ReadonlyArray<string>): Readonly<{ status: number | null; stdout: string; stderr: string }> {
@@ -51,7 +53,7 @@ describe("deploy config renderer", () => {
     await removePath(LEGACY_TEMP);
   });
 
-  it("renders only the four approved non-Secret values to the ignored dist config", async () => {
+  it("renders only the five approved non-Secret values to the ignored dist config", async () => {
     const sourceBefore = await readFile(SOURCE, "utf8");
     const result = runRender(VALID_ARGS);
     expect(result).toMatchObject({ status: 0, stderr: "" });
@@ -60,7 +62,7 @@ describe("deploy config renderer", () => {
     const rendered = JSON.parse(await readFile(OUTPUT, "utf8")) as {
       name: string;
       main: string;
-      vars: { PUBLIC_ORIGIN: string; DEPLOYMENT_STAGE: string };
+      vars: { PUBLIC_ORIGIN: string; DEPLOYMENT_STAGE: string; KEY_POOL_LAYOUT_ID: string };
       kv_namespaces: ReadonlyArray<{ binding: string; id: string }>;
       secrets: { required: ReadonlyArray<string> };
     };
@@ -69,12 +71,13 @@ describe("deploy config renderer", () => {
     expect(rendered.vars).toEqual({
       PUBLIC_ORIGIN: "https://iwind.example.invalid",
       DEPLOYMENT_STAGE: "staging",
+      KEY_POOL_LAYOUT_ID: "ring-primary-v1",
     });
     expect(rendered.kv_namespaces).toEqual([
       { binding: "OAUTH_KV", id: "1234567890abcdef1234567890abcdef" },
     ]);
     expect(rendered.secrets.required.filter((binding) => binding.startsWith("WIND_API_KEY_"))).toEqual(
-      KEY_SLOT_DEFINITIONS.map(({ secretBinding }) => secretBinding),
+      KEY_SLOT_CATALOG.map(({ secretBinding }) => secretBinding),
     );
     await expect(readFile(SOURCE, "utf8")).resolves.toBe(sourceBefore);
   });
@@ -83,6 +86,7 @@ describe("deploy config renderer", () => {
     ["all-zero KV sentinel", VALID_ARGS.with(1, "00000000000000000000000000000000")],
     ["unknown stage", VALID_ARGS.with(7, "preview")],
     ["non-HTTPS production origin", VALID_ARGS.with(5, "http://iwind.example.invalid").with(7, "production")],
+    ["unknown key pool layout", VALID_ARGS.with(9, "ring-unknown-v1")],
     ["source writeback flag", [...VALID_ARGS, "--output", "gateway/wrangler.jsonc"]],
   ])("rejects %s and leaves the source config byte-identical", async (_label, args) => {
     const sourceBefore = await readFile(SOURCE, "utf8");

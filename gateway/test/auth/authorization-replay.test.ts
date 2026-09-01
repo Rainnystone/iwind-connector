@@ -59,6 +59,8 @@ describe("authorization replay coordination", () => {
 
     expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
     expect(fixture.tokenExchanges).toHaveBeenCalledOnce();
+    expect(fixture.objectNames).not.toHaveLength(0);
+    expect(fixture.objectNames.every((objectName) => objectName === "private-key-pool")).toBe(true);
   });
 
   it("allows only one concurrent consent to enter completeAuthorization", async () => {
@@ -81,6 +83,8 @@ describe("authorization replay coordination", () => {
 
     expect(responses.map((response) => response.status).sort()).toEqual([302, 400]);
     expect(fixture.completeAuthorization).toHaveBeenCalledOnce();
+    expect(fixture.objectNames).not.toHaveLength(0);
+    expect(fixture.objectNames.every((objectName) => objectName === "private-key-pool")).toBe(true);
   });
 });
 
@@ -110,6 +114,7 @@ async function fixtureEnv() {
   const tokenExchanges = vi.fn();
   const fixture = {
     token: "",
+    objectNames: [] as string[],
     tokenExchanges,
     completeAuthorization,
     authorizationEnv: {
@@ -123,7 +128,12 @@ async function fixtureEnv() {
       ACCESS_ISSUER: "https://access.example.test",
       ACCESS_AUDIENCE: "access-audience",
       ALLOWED_USER_EMAIL: "allowed@example.test",
-      KEY_POOL: env.KEY_POOL,
+      KEY_POOL: {
+        getByName(objectName: string) {
+          fixture.objectNames.push(objectName);
+          return env.KEY_POOL.getByName(objectName);
+        },
+      },
       OAUTH_PROVIDER: {
         parseAuthRequest: async () => AUTH_REQUEST,
         lookupClient: async () => CLIENT,

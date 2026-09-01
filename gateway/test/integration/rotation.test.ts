@@ -7,6 +7,7 @@ import { handleAdminRequest } from "../../src/admin/handler";
 import type { WindFailureCategory } from "../../src/errors/types";
 import { invokeWindTool } from "../../src/invocation/invoke";
 import type { WindToolCaller } from "../../src/invocation/types";
+import { KEY_POOL_LAYOUT_ID, getKeyPoolConfiguration } from "../../src/key-pool/slots";
 import { WindCallFailure } from "../../src/upstream/call-tool";
 
 const ADMIN_TOKEN = "task-10-independent-admin";
@@ -187,6 +188,7 @@ describe("local KeyPool integration", () => {
       ADMIN_TOKEN,
       DEPLOYMENT_STAGE: "staging" as const,
       KEY_POOL: env.KEY_POOL,
+      KEY_POOL_LAYOUT_ID,
     };
     const authorized = { authorization: `Bearer ${ADMIN_TOKEN}` };
     const status = await handleAdminRequest(
@@ -242,6 +244,7 @@ function dependencies(caller: WindToolCaller) {
       KEY_POOL: env.KEY_POOL,
       WIND_API_KEY_01: KEY_01,
       WIND_API_KEY_02: KEY_02,
+      KEY_POOL_LAYOUT_ID,
       DEPLOYMENT_STAGE: "staging",
     },
     caller,
@@ -264,7 +267,7 @@ async function setNextOutcome(
 }
 
 async function currentSlotId(): Promise<string> {
-  return (await env.KEY_POOL.getByName("private-key-pool").getStatus()).currentSlotId;
+  return (await activeKeyPool().getStatus()).currentSlotId;
 }
 
 async function admin(path: string, body: object): Promise<Response> {
@@ -281,13 +284,18 @@ async function admin(path: string, body: object): Promise<Response> {
       ADMIN_TOKEN,
       DEPLOYMENT_STAGE: "staging",
       KEY_POOL: env.KEY_POOL,
+      KEY_POOL_LAYOUT_ID,
     },
   );
 }
 
 async function slotState(slotId: "key-01" | "key-02"): Promise<string | undefined> {
-  const status = await env.KEY_POOL.getByName("private-key-pool").getStatus();
+  const status = await activeKeyPool().getStatus();
   return status.slots.find((slot) => slot.slotId === slotId)?.state;
+}
+
+function activeKeyPool() {
+  return env.KEY_POOL.getByName(getKeyPoolConfiguration(KEY_POOL_LAYOUT_ID).generation.objectName);
 }
 
 interface TrackedCaller extends WindToolCaller {
