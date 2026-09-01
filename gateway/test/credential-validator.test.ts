@@ -57,4 +57,23 @@ describe("credential validator", () => {
       status: "failure",
     });
   });
+
+  it("fails closed when closing a successful session rejects without exposing that error", async () => {
+    const dependencies: CredentialValidatorDependencies = {
+      getCredential: () => "test-only-key",
+      createSession: async () => ({
+        async callTool() {
+          return { content: [{ type: "text", text: "business payload" }], isError: false };
+        },
+        async close() {
+          throw new Error("private close failure with credential-like material");
+        },
+      }),
+    };
+
+    await expect(validateWindCredential("key-04", dependencies)).resolves.toEqual({
+      slot: "key-04",
+      status: "failure",
+    });
+  });
 });

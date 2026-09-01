@@ -44,20 +44,22 @@ export async function validateWindCredential(
   }
 
   let session: Pick<WindSession, "callTool" | "close"> | undefined;
+  let outcome: CredentialValidationResult = { slot: requestedSlot, status: "failure" };
   try {
     session = await dependencies.createSession(credential);
     const result = await session.callTool(REPRESENTATIVE_TOOL, REPRESENTATIVE_INPUT);
-    if (isToolError(result)) return { slot: requestedSlot, status: "failure" };
-    return { slot: requestedSlot, status: "success", responseShape: summarizeShape(result) };
+    if (!isToolError(result)) {
+      outcome = { slot: requestedSlot, status: "success", responseShape: summarizeShape(result) };
+    }
+  } catch {
+    outcome = { slot: requestedSlot, status: "failure" };
+  }
+  try {
+    await session?.close();
   } catch {
     return { slot: requestedSlot, status: "failure" };
-  } finally {
-    try {
-      await session?.close();
-    } catch {
-      // The externally visible result remains a fail-closed anonymous failure.
-    }
   }
+  return outcome;
 }
 
 function summarizeShape(value: unknown): CredentialResponseShape {
