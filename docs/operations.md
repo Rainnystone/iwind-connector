@@ -7,7 +7,9 @@
 - Slot states and transitions: `gateway/src/key-pool/key-pool.ts`.
 - Upstream schema snapshot: `gateway/src/contracts/tool-manifest.json` plus its `.sha256`, verified by `npm run contract:verify`.
 
-The deployed pool currently has exactly two serial slots. A future third slot is an approved implementation and deployment change: append it to the slot manifest, add the matching Secret binding and tests, then run the schema migration. Never rename, reorder, or delete an existing manifest entry as an operations shortcut.
+The active primary generation has the stable catalog `key-01`, `key-02`, `key-03` and the active layout `key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is derived from a layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout.
+
+This code is not deployed to Cloudflare production yet. Production remains on the old two-slot generation until the feature PR is merged and a separately approved Task 5 cutover is performed. Do not treat a local primary-layout test as a completed deployment.
 
 ## Admin request contract
 
@@ -16,8 +18,8 @@ Use an approved admin HTTP client that injects `ADMIN_TOKEN` from protected inpu
 | Operation | Method and path | Exact JSON body | Success |
 | --- | --- | --- | --- |
 | Inspect pool | `GET {PUBLIC_ORIGIN}/admin/key-pool` | none | `200` JSON status including anonymous `currentSlotId` |
-| Disable slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-01/disable` or `key-02` | `{}` | `204` |
-| Restore slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-01/restore` or `key-02` | `{}` | `204` |
+| Disable slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-03/disable`, `key-02`, or `key-01` | `{}` | `204` |
+| Restore slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-03/restore`, `key-02`, or `key-01` | `{}` | `204` |
 
 For POST, the Content-Type must be exactly `application/json`. Record only the returned state, timestamps, call count, and request identifier; never record headers or Secret values.
 
@@ -32,20 +34,29 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
    npx --no-install wrangler secret put WIND_API_KEY_01 --config dist/wrangler.deploy.jsonc
    ```
 
-   Use `WIND_API_KEY_02` when replacing `key-02`.
+   Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
 5. Run `npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'`. A pass proves the current exact values do not occur in delivery source or the packaged Skill.
 6. Restore the slot, then inspect status again. Restore changes state only; it does not validate the replacement. Complete the change with one approved representative read-only call and confirm the slot returns to normal operation without a failure notice.
 
-## Populate the declared `key-02` slot
+## Choose the correct maintenance action
 
-1. Inspect status and confirm the target is the unused `key-02` slot. Do not replace an active Key under the name “add.”
-2. Add `WIND_API_KEY_02` to the private env file and set the Cloudflare Secret through `npx --no-install wrangler secret put WIND_API_KEY_02 --config dist/wrangler.deploy.jsonc`.
-3. Run the exact-value Secret scan.
-4. Restore `key-02`, inspect status, and complete one approved representative read-only call. Restore makes the slot eligible but does not take the cursor away from the current slot. Upstream requests remain strictly serial; adding a Key adds failover capacity, not per-request round-robin or parallel throughput.
+| Need | Safe change | Required result |
+| --- | --- | --- |
+| Replace an existing Key | Update the same private/Cloudflare binding and restore the same slot. | No catalog, layout, generation, client, Skill, MCP URL, or OAuth change. |
+| Add ordinary capacity | Append a new catalog/binding identity at the tail and create a new strict-prefix layout in the **same** generation. | Use the two-stage expand/activate rollout below; the new slot is the layout tail, not primary. |
+| Change priority, delete, rename, or insert in the middle | Create a new generation and a new Durable Object name. | Use a dedicated blue-green plan; do not disguise it as ordinary expansion. |
 
-## Extend the manifest in a future release
+The catalog is append-only. A same-generation prefix append preserves every existing slot's state, call count, cursor, and live lease. A corrupted manifest, generation mismatch, reorder, deletion, rename, middle insertion, duplicate, or catalog-external slot fails closed. Never repair SQLite by hand or retry around that rejection.
 
-This is an engineering change, not a live operations action. Obtain human approval, then append the new slot and binding to `gateway/src/key-pool/slots.ts`; add the binding to deployment configuration; update tests and documentation; and run the add-only SQLite migration and full delivery gate. The migration accepts only a manifest whose existing entries are an exact prefix, so renaming, reordering, or deleting a deployed slot requires a separately designed migration. Do not create or deploy a new Secret as part of an unapproved documentation or code change.
+## Future ordinary expansion: expand, then activate
+
+This is an engineering and approved deployment action, not a live admin action.
+
+1. Obtain human approval for the new tail slot, its Secret binding, and the rollout. Append the catalog identity/binding, define a candidate layout whose existing ordered slots are an exact prefix, and update the required binding names, tests, and documentation. `key-04` and then `key-05` are ordinary examples; neither becomes primary automatically.
+2. Build and verify the **expand candidate**. It must recognize the expanded catalog, candidate layout, and Secret binding, while `KEY_POOL_LAYOUT_ID` still selects the old active layout. Upload or deploy it only under the approval boundary; do not activate the candidate layout yet.
+3. Verify the expand candidate against its unchanged active layout, including Secret-free scans and the relevant schema/layout tests. Keep this candidate available: once activation succeeds, it is the minimum safe rollback target because it already recognizes the new layout.
+4. Build and verify the **activate candidate** with `KEY_POOL_LAYOUT_ID` changed to the approved strict-prefix layout. Activate it only after a separate cutover approval and validate its persisted manifest, slot states, cursor, lease behavior, unchanged MCP URL, 31 tools, OAuth, notices, and strict serialization.
+5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision. Record identifiers in the private deployment record, never in this public runbook.
 
 ## Disable or restore a Key
 

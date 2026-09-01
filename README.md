@@ -23,7 +23,7 @@ ChatGPT Work / Grok Web / local agent
                Cloudflare Worker gateway
                ├── OAuth and access control
                ├── 31-tool read-only manifest
-               ├── serial ordered key pool (two slots by default)
+               ├── serial ordered key pool (active primary ring: three slots)
                └── sanitized operations notices
                          │
                          ▼
@@ -40,7 +40,7 @@ The Cloudflare Plugin described below is a setup and maintenance assistant. It c
 | 31 read-only tools | Stock, fund, index, economic, announcement/news, and supported financial-analysis queries. |
 | Runtime-neutral Skill | The same Skill zip provides tool routing, identity validation, serial execution, result checks, and human-readable notices across supported agents. |
 | OAuth protection | Wind keys stay behind the gateway. Clients authenticate to the gateway rather than receiving Wind credentials. |
-| Quota-aware key rotation | The current release ships with two ordered slots. A persisted cursor keeps the active slot stable and advances around an append-only N-slot ring only on approved failover events. |
+| Quota-aware key rotation | The active primary generation uses `key-03 → key-02 → key-01`. A persisted cursor keeps the active slot stable and advances only on approved failover events. |
 | Strict serialization | At most one Wind request is active in the private key pool at a time. Additional keys increase failover capacity, not parallel throughput. |
 | Fail-closed behavior | Missing tools, ambiguous security identities, unsupported markets, and failed requests stop instead of being replaced with guessed or web-sourced data. |
 | Reproducible delivery | Tests, a deterministic 11-file Skill archive, clean-room verification, and exact-value Secret scanning protect the release process. |
@@ -60,10 +60,12 @@ The gateway does not expose trading or write actions.
 
 ## How key rotation works
 
-The current release ships with exactly two ordered slots: `key-01` and `key-02`. The KeyPool persists a cursor that identifies the current slot.
+The stable catalog currently contains `key-01`, `key-02`, and `key-03`. The active primary layout orders them `key-03 → key-02 → key-01`; its KeyPool persists a cursor that identifies the current slot. The prior `key-01 → key-02` pool remains a legacy generation for rollback compatibility and OAuth replay, not for new business calls.
 
-1. A new pool starts on `key-01`; ordinary success keeps the cursor there, so requests do not alternate between keys.
-2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-01 → key-02 → key-01`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
+This repository's primary-layout revision is awaiting merge. The currently deployed Cloudflare production environment remains on the legacy two-slot generation until a separately approved cutover; this documentation does not claim that cutover is complete.
+
+1. A new primary pool starts on `key-03`; ordinary success keeps the cursor there, so requests do not alternate between keys.
+2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-03 → key-02 → key-01 → key-03`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
 3. Each logical invocation can acquire every eligible slot at most once. If that bounded pass is exhausted, the call stops; a later independent invocation starts a new bounded pass from the persisted cursor.
 4. A trusted future `reset_at` keeps a daily-exhausted slot unavailable until its reset. When no trusted reset is supplied, the slot remains eligible for a later wrap-around probe instead of requiring a guessed reset time or manual restore.
 5. QPS cooldown, concurrency errors, timeouts, network failures, oversized responses, upstream 5xx responses, and unknown errors do not move the cursor or burn through the pool.
@@ -71,14 +73,16 @@ The current release ships with exactly two ordered slots: `key-01` and `key-02`.
 
 This is event-driven ring failover, not per-request round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
 
-`gateway/src/key-pool/slots.ts` is the single slot manifest. Future expansion appends `key-03`, `key-04`, and their Secret bindings to that manifest and updates deployment configuration, tests, and documentation. Existing entries must not be renamed, reordered, or removed without a separately approved migration. The current release does **not** discover undeclared Secrets automatically. The MCP endpoint, 31-tool manifest, OAuth flow, administration URL shape, and Skill package do not need to change merely because the pool grows.
+`gateway/src/key-pool/slots.ts` is the single non-Secret catalog, layout, and generation declaration. Slot identity and binding are stable; priority is derived from a layout and is therefore not an identity field. Ordinary future capacity additions append `key-04`, then `key-05`, to the catalog **and to the tail of a new strict-prefix layout**. They do not become primary automatically. Replacing a binding only requires a binding update and slot restore. Reordering, deleting, renaming, or inserting in the middle requires a new generation and a blue-green cutover. The current release does **not** discover undeclared Secrets automatically. The MCP endpoint, 31-tool manifest, OAuth flow, administration URL shape, and Skill package do not change merely because the pool grows.
+
+An ordinary future append is deliberately two-stage: deploy an **expand candidate** that recognizes the new catalog entry, Secret binding, and candidate layout while keeping the active layout unchanged; then deploy an **activate candidate** that switches to that prefix-compatible layout. After activation, rollback may target only the expand candidate (or a newer revision) that recognizes the activated layout. See [operations](docs/operations.md) for the complete runbook.
 
 ## Prerequisites
 
 You need:
 
 - A Wind AIFin account or entitlement that can use the integrated MCP services.
-- Two Wind API keys for the repository's current two-slot pool. The keys must never be committed to this repository.
+- Three Wind API keys for the repository's active primary layout. The keys must never be committed to this repository.
 - A Cloudflare account with Workers, KV, Durable Objects, Cron Triggers, and an approved Access/OIDC application.
 - Git, npm, and Node.js `>=24.13.1`.
 - An MCP-capable agent or client for using the deployed service.
@@ -120,6 +124,7 @@ Create a private env file outside the repository. This project's local conventio
 ```dotenv
 WIND_API_KEY_01=replace-with-your-first-key
 WIND_API_KEY_02=replace-with-your-second-key
+WIND_API_KEY_03=replace-with-your-third-key
 ```
 
 Restrict the file to its owner. Do not paste real values into source files, Markdown, chat messages, screenshots, command arguments, or deployment JSON.

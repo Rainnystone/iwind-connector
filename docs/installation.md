@@ -57,17 +57,18 @@ The checked-in `gateway/wrangler.jsonc` is the source configuration and retains 
    ```
 
    Record the returned 32-character namespace ID; do not put Secret values in this ID field.
-2. Render the deploy-only config with exactly four non-Secret inputs:
+2. Render the deploy-only config with exactly five non-Secret inputs, including the approved active layout:
 
    ```bash
    npm run deploy:render -- \
      --oauth-kv-id 1234567890abcdef1234567890abcdef \
      --worker-name iwind-connector-production \
      --public-origin https://iwind.example.invalid \
-     --deployment-stage production
+     --deployment-stage production \
+     --key-pool-layout-id ring-primary-v1
    ```
 
-   Replace every example value. Production origins must be HTTPS. The renderer rejects the all-zero KV sentinel, unknown stages, extra flags, and source-config writeback, and writes only ignored `dist/wrangler.deploy.jsonc`.
+   Replace every example value. Production origins must be HTTPS. The renderer rejects the all-zero KV sentinel, unknown stages or layouts, extra flags, and source-config writeback, and writes only ignored `dist/wrangler.deploy.jsonc`. The source configuration currently requires 13 Secret binding names, including `WIND_API_KEY_01`, `WIND_API_KEY_02`, and `WIND_API_KEY_03`; list them from the source rather than copying values into this document.
 3. Treat `gateway/wrangler.jsonc` → `secrets.required` as the single source of truth for required bindings. List the current names without values:
 
    ```bash

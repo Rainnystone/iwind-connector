@@ -63,6 +63,23 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [ ] Confirm both declared slot states, stable notice wire shapes, maximum upstream in-flight of one, and unchanged MCP URL, 31 tools, OAuth, and Skill behavior.
 - [ ] Obtain a separate production cutover approval only after staging evidence is accepted.
 
+## v0.5 N-Key primary-layout local gate
+
+- [x] Confirm the stable catalog is `key-01`, `key-02`, `key-03` while the active primary layout is `key-03 → key-02 → key-01`; priority is layout-derived rather than slot identity.
+- [x] Confirm the old legacy pool remains schema v2 with no `pool_manifest`, while the new primary generation initializes schema v3 with a generation/layout manifest.
+- [x] Confirm ordinary same-generation expansion accepts only a strict prefix append and preserves existing slot state, counters, cursor, and lease.
+- [x] Confirm corrupt metadata, generation mismatch, reorder, deletion, rename, middle insertion, duplicate slots, and catalog-external slots fail closed without mutating persisted state.
+- [x] Confirm active business routing uses the primary generation while OAuth replay remains on the legacy object.
+- [x] Confirm the active ring remains quota-event failover—not per-request round-robin—with at most one upstream request active and no cursor advance for non-rotation errors.
+
+## v0.5 future expand and activate rollout
+
+- [ ] Obtain separate human approval before adding a future Key binding, uploading a candidate, changing a Cloudflare version, or changing production state.
+- [ ] Deploy and test an **expand candidate** that recognizes the new tail catalog entry, Secret binding, and candidate layout while its active layout remains unchanged.
+- [ ] Deploy and test an **activate candidate** that switches only to the approved strict-prefix layout; retain the expand candidate as the minimum safe rollback target after activation.
+- [ ] For a reorder, deletion, rename, or middle insertion, prove a separate generation and blue-green plan rather than using ordinary expansion.
+- [ ] Keep the present Cloudflare production on its legacy two-slot generation until the PR is merged and a separately approved cutover is performed.
+
 ## Timeout and retry contract
 
 - [x] Run the local/fake 600-second total-budget contract with a fake clock and abort signal, without a live 600-second wait or Wind quota use.
