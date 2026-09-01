@@ -1,45 +1,113 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertKeySlotCatalogAppendOnly,
+  getKeyPoolConfiguration,
   getKeySlotDefinition,
+  getKeySlotDefinitions,
   isSlotId,
+  KEY_POOL_GENERATIONS,
+  KEY_POOL_LAYOUT_ID,
+  KEY_POOL_LAYOUTS,
+  KEY_SLOT_CATALOG,
   KEY_SLOT_DEFINITIONS,
 } from "../../src/key-pool/slots";
 import { nextSlotId, orderSlotRing } from "../../src/key-pool/slot-ring";
 
 describe("key slot manifest", () => {
-  it("defines the current two-slot deployment contract exactly once", () => {
-    expect(KEY_SLOT_DEFINITIONS).toEqual([
-      { slotId: "key-01", priority: 1, secretBinding: "WIND_API_KEY_01" },
-      { slotId: "key-02", priority: 2, secretBinding: "WIND_API_KEY_02" },
+  it("keeps a unique append-only catalog and derives the primary ring from it", () => {
+    expect(KEY_SLOT_CATALOG).toEqual([
+      { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
+      { slotId: "key-02", secretBinding: "WIND_API_KEY_02" },
+      { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
     ]);
+    expect(getKeySlotDefinitions(KEY_POOL_LAYOUT_ID)).toEqual([
+      { slotId: "key-03", priority: 1, secretBinding: "WIND_API_KEY_03" },
+      { slotId: "key-02", priority: 2, secretBinding: "WIND_API_KEY_02" },
+      { slotId: "key-01", priority: 3, secretBinding: "WIND_API_KEY_01" },
+    ]);
+    expect(KEY_SLOT_DEFINITIONS).toEqual(getKeySlotDefinitions("ring-legacy-v1"));
   });
 
-  it("keeps priorities contiguous and bindings unique", () => {
-    expect(KEY_SLOT_DEFINITIONS.map(({ priority }) => priority)).toEqual([1, 2]);
-    expect(new Set(KEY_SLOT_DEFINITIONS.map(({ slotId }) => slotId)).size).toBe(
-      KEY_SLOT_DEFINITIONS.length,
+  it("rejects removal, reorder, duplicate slots, and duplicate bindings from catalog growth", () => {
+    expect(() => assertKeySlotCatalogAppendOnly(KEY_SLOT_CATALOG, KEY_SLOT_CATALOG.slice(0, 2))).toThrow(
+      "KEY_SLOT_CATALOG_APPEND_ONLY",
     );
-    expect(new Set(KEY_SLOT_DEFINITIONS.map(({ secretBinding }) => secretBinding)).size).toBe(
-      KEY_SLOT_DEFINITIONS.length,
-    );
+    expect(() =>
+      assertKeySlotCatalogAppendOnly(KEY_SLOT_CATALOG.slice(0, 2), [
+        KEY_SLOT_CATALOG[1]!,
+        KEY_SLOT_CATALOG[0]!,
+      ]),
+    ).toThrow("KEY_SLOT_CATALOG_APPEND_ONLY");
+    expect(() =>
+      assertKeySlotCatalogAppendOnly([], [
+        { slotId: "slot-01", secretBinding: "WIND_API_KEY_99" },
+        { slotId: "slot-01", secretBinding: "WIND_API_KEY_98" },
+      ]),
+    ).toThrow("INVALID_KEY_SLOT_CATALOG");
+    expect(() =>
+      assertKeySlotCatalogAppendOnly([], [
+        { slotId: "slot-01", secretBinding: "WIND_API_KEY_99" },
+        { slotId: "slot-02", secretBinding: "WIND_API_KEY_99" },
+      ]),
+    ).toThrow("INVALID_KEY_SLOT_CATALOG");
   });
 
-  it("recognizes every manifest slot and rejects values outside it", () => {
-    for (const definition of KEY_SLOT_DEFINITIONS) {
-      expect(isSlotId(definition.slotId)).toBe(true);
-      expect(getKeySlotDefinition(definition.slotId)).toBe(definition);
+  it("resolves declared layouts and generations while rejecting unknown layouts", () => {
+    const configuration = getKeyPoolConfiguration(KEY_POOL_LAYOUT_ID);
+    expect(configuration.layout).toMatchObject({
+      layoutId: "ring-primary-v1",
+      generationId: "primary-v2",
+      orderedSlotIds: ["key-03", "key-02", "key-01"],
+    });
+    expect(configuration.generation).toEqual({
+      generationId: "primary-v2",
+      objectName: "private-key-pool-v2",
+    });
+    for (const catalogEntry of KEY_SLOT_CATALOG) {
+      expect(isSlotId(catalogEntry.slotId)).toBe(true);
+      expect(getKeySlotDefinition(catalogEntry.slotId)).toBe(catalogEntry);
     }
-    expect(isSlotId("key-03")).toBe(false);
+    expect(isSlotId("key-04")).toBe(false);
     expect(isSlotId(1)).toBe(false);
-    expect(() => Reflect.apply(getKeySlotDefinition, undefined, ["key-03"])).toThrow(
+    expect(() => Reflect.apply(getKeySlotDefinition, undefined, ["key-04"])).toThrow(
       "UNKNOWN_SLOT",
     );
+    expect(() => getKeyPoolConfiguration("ring-unknown-v1")).toThrow("INVALID_KEY_POOL_LAYOUT");
+  });
+
+  it("fails closed when two generations reuse one Durable Object name", () => {
+    const generations = KEY_POOL_GENERATIONS as unknown as Record<
+      string,
+      { generationId: string; objectName: string }
+    >;
+    const layouts = KEY_POOL_LAYOUTS as unknown as Record<
+      string,
+      { layoutId: string; generationId: string; orderedSlotIds: readonly ("key-01")[] }
+    >;
+    generations.duplicateObjectName = {
+      generationId: "duplicate-object-name-v3",
+      objectName: "private-key-pool-v2",
+    };
+    layouts["ring-duplicate-object-name-v1"] = {
+      layoutId: "ring-duplicate-object-name-v1",
+      generationId: "duplicate-object-name-v3",
+      orderedSlotIds: ["key-01"],
+    };
+
+    try {
+      expect(() => getKeyPoolConfiguration("ring-duplicate-object-name-v1")).toThrow(
+        "INVALID_KEY_POOL_GENERATION",
+      );
+    } finally {
+      delete layouts["ring-duplicate-object-name-v1"];
+      delete generations.duplicateObjectName;
+    }
   });
 });
 
 describe("generic slot ring", () => {
-  it.each([1, 2, 3, 4])("orders and wraps a %i-slot manifest from every cursor", (size) => {
+  it.each([1, 2, 3, 4, 5, 8])("orders and wraps a %i-slot manifest from every cursor", (size) => {
     const definitions = Array.from({ length: size }, (_, index) => ({
       slotId: `slot-${String(index + 1)}`,
       priority: index + 1,

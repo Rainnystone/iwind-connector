@@ -1,4 +1,5 @@
 import type { AcquireLeaseResult, SlotId } from "./types";
+import { LEGACY_KEY_POOL_LAYOUT_ID, getKeyPoolConfiguration } from "./slots";
 
 const ACQUIRE_WAIT_MS = 2_000;
 const ACQUIRE_POLL_MS = 100;
@@ -9,8 +10,9 @@ export async function acquireKeyPoolLease(
   env: KeyPoolEnvironment,
   requestId: string,
   attemptedSlotIds: readonly SlotId[] = [],
+  objectName = getKeyPoolConfiguration(LEGACY_KEY_POOL_LAYOUT_ID).generation.objectName,
 ): Promise<AcquireLeaseResult> {
-  const keyPool = env.KEY_POOL.getByName("private-key-pool");
+  const keyPool = env.KEY_POOL.getByName(objectName);
   const deadline = Date.now() + ACQUIRE_WAIT_MS;
   let firstAttempt = true;
 

@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { KEY_SLOT_DEFINITIONS } from "../gateway/src/key-pool/slots.js";
+import {
+  KEY_SLOT_CATALOG,
+  getKeyPoolConfiguration,
+} from "../gateway/src/key-pool/slots.js";
 import { safeAtomicWrite } from "./safe-atomic-write.js";
 
 type Inputs = Readonly<{
@@ -9,6 +12,7 @@ type Inputs = Readonly<{
   workerName: string;
   publicOrigin: string;
   deploymentStage: "local" | "staging" | "production";
+  keyPoolLayoutId: string;
 }>;
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
@@ -18,7 +22,13 @@ const OUTPUT = path.join(OUTPUT_DIRECTORY, "wrangler.deploy.jsonc");
 
 function parseArgs(args: ReadonlyArray<string>): Inputs {
   const values = new Map<string, string>();
-  const allowed = new Set(["--oauth-kv-id", "--worker-name", "--public-origin", "--deployment-stage"]);
+  const allowed = new Set([
+    "--oauth-kv-id",
+    "--worker-name",
+    "--public-origin",
+    "--deployment-stage",
+    "--key-pool-layout-id",
+  ]);
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
@@ -33,6 +43,7 @@ function parseArgs(args: ReadonlyArray<string>): Inputs {
   const workerName = values.get("--worker-name") ?? "";
   const publicOrigin = values.get("--public-origin") ?? "";
   const stage = values.get("--deployment-stage") ?? "";
+  const keyPoolLayoutId = values.get("--key-pool-layout-id") ?? "";
   if (!/^[a-f0-9]{32}$/u.test(oauthKvId) || /^0{32}$/u.test(oauthKvId)) {
     throw new Error("DEPLOY_CONFIG_INVALID");
   }
@@ -42,11 +53,12 @@ function parseArgs(args: ReadonlyArray<string>): Inputs {
   if (stage !== "local" && stage !== "staging" && stage !== "production") {
     throw new Error("DEPLOY_CONFIG_INVALID");
   }
+  getKeyPoolConfiguration(keyPoolLayoutId);
   const origin = new URL(publicOrigin);
   if (origin.origin !== publicOrigin || (stage === "production" && origin.protocol !== "https:")) {
     throw new Error("DEPLOY_CONFIG_INVALID");
   }
-  return { oauthKvId, workerName, publicOrigin, deploymentStage: stage };
+  return { oauthKvId, workerName, publicOrigin, deploymentStage: stage, keyPoolLayoutId };
 }
 async function render(inputs: Inputs): Promise<void> {
   const source = JSON.parse(await readFile(SOURCE, "utf8")) as Record<string, unknown>;
@@ -67,7 +79,7 @@ async function render(inputs: Inputs): Promise<void> {
     !requiredSecrets.every((binding): binding is string => typeof binding === "string") ||
     !arraysEqual(
       requiredSecrets.filter((binding) => binding.startsWith("WIND_API_KEY_")),
-      KEY_SLOT_DEFINITIONS.map(({ secretBinding }) => secretBinding),
+      KEY_SLOT_CATALOG.map(({ secretBinding }) => secretBinding),
     )
   ) {
     throw new Error("DEPLOY_CONFIG_INVALID");
@@ -76,7 +88,11 @@ async function render(inputs: Inputs): Promise<void> {
     ...source,
     name: inputs.workerName,
     main: "../gateway/src/index.ts",
-    vars: { PUBLIC_ORIGIN: inputs.publicOrigin, DEPLOYMENT_STAGE: inputs.deploymentStage },
+    vars: {
+      PUBLIC_ORIGIN: inputs.publicOrigin,
+      DEPLOYMENT_STAGE: inputs.deploymentStage,
+      KEY_POOL_LAYOUT_ID: inputs.keyPoolLayoutId,
+    },
     kv_namespaces: [{ binding: "OAUTH_KV", id: inputs.oauthKvId }],
   };
   await safeAtomicWrite({

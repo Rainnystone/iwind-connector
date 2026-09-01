@@ -28,6 +28,7 @@ const TEST_ENV = {
   DEPLOYMENT_STAGE: "local" as const,
   WIND_API_KEY_01: "task-10-worker-key-one",
   WIND_API_KEY_02: "task-10-worker-key-two",
+  WIND_API_KEY_03: "task-10-worker-key-three",
   ADMIN_TOKEN: "task-10-admin-only-token",
   COOKIE_ENCRYPTION_KEY: "task-10-cookie-encryption-key",
   ACCESS_CLIENT_ID: "task-10-access-client",
@@ -186,7 +187,7 @@ describe("OAuth-protected local Worker and MCP integration", () => {
     expect(upstream.calledTools).toEqual(representatives.map(([name]) => name));
     expect(new Set(upstream.calledUrls)).toHaveLength(6);
     expect(upstream.maximumInFlight).toBe(1);
-    expect(upstream.authorizationSlots).toEqual(Array(6).fill("key-01"));
+    expect(upstream.authorizationSlots).toEqual(Array(6).fill("key-03"));
 
     const replay = await gatewayFetch(provider, tokenRequest());
     expect(replay.status).toBe(400);
@@ -668,7 +669,7 @@ async function upstreamFixture(): Promise<{
           fixture.calledUrls.push(url.href);
           const authorization = new Headers(init?.headers).get("authorization");
           fixture.authorizationSlots.push(
-            authorization === `Bearer ${TEST_ENV.WIND_API_KEY_01}` ? "key-01" : "unexpected",
+            authorization === `Bearer ${TEST_ENV.WIND_API_KEY_03}` ? "key-03" : "unexpected",
           );
           return jsonRpc(message.id, {
             content: [{ type: "text", text: "synthetic-upstream-success" }],

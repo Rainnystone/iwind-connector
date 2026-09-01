@@ -1,12 +1,12 @@
 import { authenticateAdmin } from "./authenticate";
-import { isSlotId } from "../key-pool/slots";
+import { getKeyPoolConfiguration, isSlotId } from "../key-pool/slots";
 import type { SlotId } from "../key-pool/types";
 import { hasExactKeys, parseTestControl } from "./test-control";
 
 const TEST_CONTROL_PATH = "/admin/test-controls/next-outcome";
 const MAX_ADMIN_BODY_BYTES = 4096;
 
-type AdminEnvironment = Pick<Cloudflare.Env, "ADMIN_TOKEN" | "KEY_POOL"> & {
+type AdminEnvironment = Pick<Cloudflare.Env, "ADMIN_TOKEN" | "KEY_POOL" | "KEY_POOL_LAYOUT_ID"> & {
   readonly DEPLOYMENT_STAGE: "local" | "staging" | "production";
 };
 
@@ -21,6 +21,7 @@ export async function handleAdminRequest(
     return notFound();
   }
 
+  const configuration = getKeyPoolConfiguration(env.KEY_POOL_LAYOUT_ID);
   const route = matchRoute(url.pathname);
   if (route === null) return notFound();
   if (request.method !== route.method) {
@@ -38,7 +39,7 @@ export async function handleAdminRequest(
   }
   if (authentication === "rejected") return new Response("Forbidden", { status: 403 });
 
-  const keyPool = env.KEY_POOL.getByName("private-key-pool");
+  const keyPool = env.KEY_POOL.getByName(configuration.generation.objectName);
   if (route.kind === "status") {
     const status = await keyPool.getStatus();
     return Response.json(
@@ -68,6 +69,8 @@ export async function handleAdminRequest(
 
   if (route.kind === "slot") {
     if (!hasExactKeys(body.value, [])) return new Response("Bad Request", { status: 400 });
+    const status = await keyPool.getStatus();
+    if (!status.slots.some(({ slotId }) => slotId === route.slotId)) return notFound();
     if (route.action === "restore") await keyPool.restoreSlot(route.slotId, now);
     else await keyPool.disableSlot(route.slotId, now);
     return new Response(null, { status: 204 });
@@ -75,6 +78,10 @@ export async function handleAdminRequest(
 
   const outcome = parseTestControl(body.value);
   if (outcome === null) return new Response("Bad Request", { status: 400 });
+  const status = await keyPool.getStatus();
+  if (!status.slots.some(({ slotId }) => slotId === outcome.slotId)) {
+    return new Response("Bad Request", { status: 400 });
+  }
   await keyPool.setNextTestOutcome(outcome);
   return new Response(null, { status: 204 });
 }
@@ -93,7 +100,11 @@ function matchRoute(pathname: string): AdminRoute | null {
   if (pathname === "/admin/key-pool") return { kind: "status", method: "GET" };
   if (pathname === TEST_CONTROL_PATH) return { kind: "test-control", method: "POST" };
   const match = pathname.match(/^\/admin\/key-pool\/slots\/([^/]+)\/(restore|disable)$/u);
-  if (match === null || !isSlotId(match[1]) || (match[2] !== "restore" && match[2] !== "disable")) {
+  if (
+    match === null ||
+    !isSlotId(match[1]) ||
+    (match[2] !== "restore" && match[2] !== "disable")
+  ) {
     return null;
   }
   return { kind: "slot", method: "POST", slotId: match[1], action: match[2] };

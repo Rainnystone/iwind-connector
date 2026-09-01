@@ -6,6 +6,7 @@ import type {
 } from "@cloudflare/workers-oauth-provider";
 
 import { exchangeAndVerifyAccessCode, type AccessOidcDependencies } from "./access-oidc";
+import { LEGACY_KEY_POOL_LAYOUT_ID, getKeyPoolConfiguration } from "../key-pool/slots";
 import { clearSessionCookie, openSessionCookie, sealSessionCookie } from "./state-cookie";
 import type { AccessFlowSession, ConsentFlowSession } from "./types";
 
@@ -73,7 +74,7 @@ async function startAuthorization(
   if (client === null) return localOAuthError("Unknown OAuth client");
   const state = randomToken();
   const nonce = randomToken();
-  await env.KEY_POOL.getByName("private-key-pool").setOAuthReplayMarker({
+  await legacyKeyPool(env).setOAuthReplayMarker({
     markerId: await markerId(state),
     kind: "access",
     now,
@@ -125,7 +126,7 @@ async function completeAccessCallback(
     if (code === null || state === null || !(await digestEqual(state, session.state))) {
       throw new Error("invalid callback");
     }
-    const consumed = await env.KEY_POOL.getByName("private-key-pool").consumeOAuthReplayMarker({
+    const consumed = await legacyKeyPool(env).consumeOAuthReplayMarker({
       markerId: await markerId(state),
       kind: "access",
       now,
@@ -149,7 +150,7 @@ async function completeAccessCallback(
     );
     const csrf = randomToken();
     const marker = randomToken();
-    await env.KEY_POOL.getByName("private-key-pool").setOAuthReplayMarker({
+    await legacyKeyPool(env).setOAuthReplayMarker({
       markerId: await markerId(marker),
       kind: "consent",
       now,
@@ -212,7 +213,7 @@ async function completeConsent(
     if (!(await digestEqual(form.get("csrf") ?? "", session.csrf))) throw new Error("csrf mismatch");
     const action = form.get("action");
     if (action !== "approve" && action !== "deny") throw new Error("invalid action");
-    const consumed = await env.KEY_POOL.getByName("private-key-pool").consumeOAuthReplayMarker({
+    const consumed = await legacyKeyPool(env).consumeOAuthReplayMarker({
       markerId: await markerId(session.marker),
       kind: "consent",
       now,
@@ -367,6 +368,12 @@ function safeClient(client: ClientInfo): AccessFlowSession["client"] {
 
 function canonicalCallback(publicOrigin: string): string {
   return `${new URL(publicOrigin).origin}/callback`;
+}
+
+function legacyKeyPool(env: IWindAuthorizationEnvironment) {
+  return env.KEY_POOL.getByName(
+    getKeyPoolConfiguration(LEGACY_KEY_POOL_LAYOUT_ID).generation.objectName,
+  );
 }
 
 async function markerId(value: string): Promise<string> {

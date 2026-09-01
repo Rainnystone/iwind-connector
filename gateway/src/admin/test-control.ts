@@ -17,7 +17,9 @@ const ALLOWED_CATEGORIES = new Set<WindFailureCategory>([
 
 export function parseTestControl(value: unknown): PendingTestOutcome | null {
   if (!isRecord(value) || !hasExactKeys(value, ["slotId", "category", "times"])) return null;
-  if (!isSlotId(value.slotId) || !isFailureCategory(value.category) || value.times !== 1) return null;
+  if (!isSlotId(value.slotId) || !isFailureCategory(value.category) || value.times !== 1) {
+    return null;
+  }
   return { slotId: value.slotId, category: value.category };
 }
 

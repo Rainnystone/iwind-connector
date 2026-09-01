@@ -63,19 +63,41 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [ ] Confirm both declared slot states, stable notice wire shapes, maximum upstream in-flight of one, and unchanged MCP URL, 31 tools, OAuth, and Skill behavior.
 - [ ] Obtain a separate production cutover approval only after staging evidence is accepted.
 
+## v0.5 N-Key primary-layout local gate
+
+- [x] Confirm the stable catalog is `key-01`, `key-02`, `key-03` while the active primary layout is `key-03 → key-02 → key-01`; priority is layout-derived rather than slot identity.
+- [x] Confirm the old legacy pool remains schema v2 with no `pool_manifest`, while the new primary generation initializes schema v3 with a generation/layout manifest.
+- [x] Confirm ordinary same-generation expansion accepts only a strict prefix append and preserves existing slot state, counters, cursor, and lease.
+- [x] Confirm corrupt metadata, generation mismatch, reorder, deletion, rename, middle insertion, duplicate slots, and catalog-external slots fail closed without mutating persisted state.
+- [x] Confirm active business routing uses the primary generation while OAuth replay remains on the legacy object.
+- [x] Confirm the active ring remains quota-event failover—not per-request round-robin—with at most one upstream request active and no cursor advance for non-rotation errors.
+
+## v0.5 future expand and activate rollout
+
+- [ ] Obtain separate human approval before adding a future Key binding, uploading a candidate, changing a Cloudflare version, or changing production state.
+- [ ] Deploy and test an **expand candidate** that recognizes the new tail catalog entry, Secret binding, and candidate layout while its active layout remains unchanged.
+- [ ] Deploy and test an **activate candidate** that switches only to the approved strict-prefix layout; retain the expand candidate as the minimum safe rollback target after activation.
+- [ ] For an existing Worker, use the complete owner-only Secret file to `versions upload --config dist/wrangler.deploy.jsonc`, inspect the exact candidate with `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` through the installation names-only filter, then deploy exact `candidate@100% --config dist/wrangler.deploy.jsonc`; do not percentage-split the KeyPool deployment.
+- [ ] For first creation only, use one complete `wrangler deploy --config dist/wrangler.deploy.jsonc --secrets-file` deployment; do not use per-binding `secret put` as a standard deployment step.
+- [ ] Confirm the persisted manifest is the activated versioned object's runtime authority: compatible expand rollback reads the persisted successor layout while its environment active ID remains old; admin, test-control, lease, cursor, and acquisition all follow persisted layout; unknown/non-prefix layouts fail closed.
+- [ ] For a reorder, deletion, rename, or middle insertion, prove a separate generation and blue-green plan rather than using ordinary expansion.
+- [ ] Keep the present Cloudflare production on its legacy two-slot generation until the PR is merged and a separately approved cutover is performed.
+
 ## Timeout and retry contract
 
 - [x] Run the local/fake 600-second total-budget contract with a fake clock and abort signal, without a live 600-second wait or Wind quota use.
 - [x] Confirm in Workers integration tests that timeout, upstream 5xx, and network failures retry at most once on the same slot, never select the second slot, and keep maximum Wind in-flight at one.
 
-## Production cutover
+## Production cutover — v0.4 legacy evidence
+
+The checked items in this section are historical evidence for the already deployed `key-01 → key-02` legacy generation and its 12-binding version only. They do not evidence deployment of the v0.5 `key-03 → key-02 → key-01` primary layout, which remains pending the separately approved Task 5 cutover.
 
 - [x] Re-render the deploy-only config with the same Worker, origin, KV, Durable Object, cron, and 12 required Secret bindings, changing only `DEPLOYMENT_STAGE` to `production`.
 - [x] Run a dry-run build and inspect the complete candidate before upload.
 - [x] Upload with the complete private secrets file without deploying, inspect the new version, then explicitly deploy that one version at 100%.
 - [x] Confirm the same public MCP URL remains in service and the staging test-control route returns 404.
 
-## Production security
+## Production security — v0.4 legacy evidence
 
 - [x] Confirm unauthenticated MCP returns 401, OAuth metadata remains valid, and admin requests without independent authorization are rejected.
 - [x] Confirm `initialize`, 31 tools, one representative read-only call, ordinary success with no operations notice, application-log allowlist, and both KeyPool slots active.

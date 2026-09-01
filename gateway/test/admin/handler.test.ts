@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { handleAdminRequest } from "../../src/admin/handler";
 import type { WindFailureCategory } from "../../src/errors/types";
-import { KEY_SLOT_DEFINITIONS } from "../../src/key-pool/slots";
+import { KEY_POOL_LAYOUT_ID, getKeySlotDefinitions } from "../../src/key-pool/slots";
 
 const ADMIN_TOKEN = "independent-admin-token";
 const NOW = Date.UTC(2035, 7, 24);
@@ -54,11 +54,17 @@ describe("independent admin surface", () => {
       ["disable", "key-01", NOW],
       ["restore", "key-01", NOW + 1],
     ]);
+    expect(fixture.objectNames).toEqual([
+      "private-key-pool-v2",
+      "private-key-pool-v2",
+      "private-key-pool-v2",
+    ]);
   });
 
   it("accepts restore and disable routes for every manifest slot", async () => {
     const fixture = adminEnv("staging");
-    for (const definition of KEY_SLOT_DEFINITIONS) {
+    const activeDefinitions = getKeySlotDefinitions(KEY_POOL_LAYOUT_ID);
+    for (const definition of activeDefinitions) {
       await expect(
         handleAdminRequest(
           adminRequest(`/admin/key-pool/slots/${definition.slotId}/disable`, "POST", {}),
@@ -75,11 +81,57 @@ describe("independent admin surface", () => {
       ).resolves.toMatchObject({ status: 204 });
     }
     expect(fixture.calls).toEqual(
-      KEY_SLOT_DEFINITIONS.flatMap(({ slotId }) => [
+      activeDefinitions.flatMap(({ slotId }) => [
         ["disable", slotId, NOW],
         ["restore", slotId, NOW + 1],
       ]),
     );
+  });
+
+  it("accepts only active-layout slots for admin routes and staging controls", async () => {
+    const primary = adminEnv("staging");
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/key-pool/slots/key-03/disable", "POST", {}),
+        primary,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/test-controls/next-outcome", "POST", {
+          slotId: "key-03",
+          category: "daily_quota",
+          times: 1,
+        }),
+        primary,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
+    expect(primary.calls).toEqual([["disable", "key-03", NOW]]);
+    expect(primary.controls).toEqual([{ slotId: "key-03", category: "daily_quota" }]);
+
+    const legacy = adminEnv("staging", "ring-legacy-v1");
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/key-pool/slots/key-03/disable", "POST", {}),
+        legacy,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 404 });
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/test-controls/next-outcome", "POST", {
+          slotId: "key-03",
+          category: "daily_quota",
+          times: 1,
+        }),
+        legacy,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 400 });
+    expect(legacy.calls).toEqual([]);
+    expect(legacy.controls).toEqual([]);
   });
 
   it("requires exact JSON objects and exact admin routes", async () => {
@@ -160,25 +212,28 @@ function adminRequest(path: string, method = "GET", body?: object): Request {
   });
 }
 
-function adminEnv(stage: "local" | "staging" | "production") {
+function adminEnv(
+  stage: "local" | "staging" | "production",
+  keyPoolLayoutId = KEY_POOL_LAYOUT_ID,
+) {
   const calls: Array<[string, string, number]> = [];
+  const objectNames: string[] = [];
   const controls: Array<{ slotId: string; category: WindFailureCategory }> = [];
+  const configuredSlots = getKeySlotDefinitions(keyPoolLayoutId);
   const stub = {
     async getStatus() {
       return {
         currentSlotId: "key-01",
-        slots: [
-          {
-            slotId: "key-01",
-            priority: 1,
-            state: "active",
-            resetAt: null,
-            cooldownUntil: null,
-            lastErrorCode: "raw-error-must-not-escape",
-            callCount: 0,
-            updatedAt: NOW,
-          },
-        ],
+        slots: configuredSlots.map(({ slotId, priority }) => ({
+          slotId,
+          priority,
+          state: "active",
+          resetAt: null,
+          cooldownUntil: null,
+          lastErrorCode: "raw-error-must-not-escape",
+          callCount: 0,
+          updatedAt: NOW,
+        })),
         lease: {
           leaseId: "lease-secret",
           requestId: "request-secret",
@@ -200,9 +255,16 @@ function adminEnv(stage: "local" | "staging" | "production") {
   return {
     ADMIN_TOKEN,
     DEPLOYMENT_STAGE: stage,
-    KEY_POOL: { getByName: () => stub },
+    KEY_POOL: {
+      getByName: (objectName: string) => {
+        objectNames.push(objectName);
+        return stub;
+      },
+    },
+    KEY_POOL_LAYOUT_ID: keyPoolLayoutId,
     calls,
     controls,
+    objectNames,
   } as never as Cloudflare.Env & {
     calls: typeof calls;
     controls: typeof controls;

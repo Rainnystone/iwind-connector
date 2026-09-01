@@ -26,6 +26,10 @@ function keyPool() {
   return env.KEY_POOL.getByName("private-key-pool");
 }
 
+function primaryKeyPool() {
+  return env.KEY_POOL.getByName("private-key-pool-v2");
+}
+
 function acquireLease(
   stub: { acquireLease(input: AcquireLeaseInput): Promise<AcquireLeaseResult> },
   requestId: string,
@@ -36,6 +40,478 @@ function acquireLease(
 }
 
 describe("KeyPool SQLite Durable Object", () => {
+  it("leaves every existing legacy v2 row and schema marker compatible with the old Worker", async () => {
+    const stub = keyPool();
+    await stub.getStatus();
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        state.storage.sql.exec(
+          `UPDATE slots SET state = 'disabled_balance', reset_at = NULL,
+             cooldown_until = NULL, last_error_code = 'balance', call_count = 17,
+             updated_at = ? WHERE slot_id = 'key-01'`,
+          BASE_TIME - 3,
+        );
+        state.storage.sql.exec(
+          `UPDATE slots SET state = 'cooldown', reset_at = NULL,
+             cooldown_until = ?, last_error_code = 'qps', call_count = 23,
+             updated_at = ? WHERE slot_id = 'key-02'`,
+          BASE_TIME + 60_000,
+          BASE_TIME - 2,
+        );
+        state.storage.sql.exec(
+          "UPDATE pool_state SET cursor_slot_id = 'key-02', updated_at = ? WHERE singleton = 1",
+          BASE_TIME - 1,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at)
+           VALUES (1, 'legacy-live-lease', 'legacy-request', 'key-02', ?)`,
+          BASE_TIME + 30_000,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO oauth_replay_marker (marker_id, kind, expires_at)
+           VALUES (?, 'access', ?)`,
+          "e".repeat(64),
+          BASE_TIME + 600_000,
+        );
+      });
+    });
+    const before = await legacyPersistenceSnapshot(stub);
+
+    await evictDurableObject(stub);
+    await stub.getStatus();
+
+    expect(await legacyPersistenceSnapshot(stub)).toEqual(before);
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<Record<string, SqlStorageValue> & { name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pool_manifest'",
+          )
+          .toArray(),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("initializes a new primary generation at key-03 with schema v3 and three active slots", async () => {
+    const stub = primaryKeyPool();
+
+    const status = await stub.getStatus();
+
+    expect(status).toMatchObject({
+      currentSlotId: "key-03",
+      slots: [
+        { slotId: "key-03", priority: 1, state: "active", callCount: 0 },
+        { slotId: "key-02", priority: 2, state: "active", callCount: 0 },
+        { slotId: "key-01", priority: 3, state: "active", callCount: 0 },
+      ],
+      lease: null,
+    });
+    const metadata = await runInDurableObject(stub, (_instance, state) => ({
+      manifest: state.storage.sql
+        .exec<
+          Record<string, SqlStorageValue> & {
+            generation_id: string;
+            layout_id: string;
+          }
+        >("SELECT generation_id, layout_id FROM pool_manifest WHERE singleton = 1")
+        .one(),
+      versions: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { version: number }>(
+          "SELECT version FROM _key_pool_schema_migrations ORDER BY version",
+        )
+        .toArray()
+        .map(({ version }) => version),
+    }));
+    expect(metadata).toEqual({
+      manifest: { generation_id: "primary-v2", layout_id: "ring-primary-v1" },
+      versions: [1, 2, 3],
+    });
+  });
+
+  it("appends synthetic fourth and fifth slots atomically without changing live state", async () => {
+    const stub = primaryKeyPool();
+    const lease = await acquireLease(stub, "future-prefix-holder", BASE_TIME);
+    if (!lease.ok) throw new Error("fixture-lease-not-acquired");
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        state.storage.sql.exec(
+          `UPDATE slots SET state = 'disabled_balance', last_error_code = 'balance',
+             call_count = 9, updated_at = ? WHERE slot_id = 'key-02'`,
+          BASE_TIME - 1,
+        );
+      });
+      Reflect.apply(initializeKeyPoolSchema, undefined, [
+        state.storage,
+        BASE_TIME + 1,
+        syntheticPersistenceConfiguration("ring-primary-v2", [
+          "key-03",
+          "key-02",
+          "key-01",
+          "key-04",
+        ]),
+      ]);
+      Reflect.apply(initializeKeyPoolSchema, undefined, [
+        state.storage,
+        BASE_TIME + 2,
+        syntheticPersistenceConfiguration("ring-primary-v3", [
+          "key-03",
+          "key-02",
+          "key-01",
+          "key-04",
+          "key-05",
+        ]),
+      ]);
+    });
+
+    const persisted = await runInDurableObject(stub, (_instance, state) => ({
+      slots: state.storage.sql
+        .exec<
+          Record<string, SqlStorageValue> & {
+            slot_id: string;
+            priority: number;
+            state: string;
+            call_count: number;
+            last_error_code: string | null;
+          }
+        >(
+          "SELECT slot_id, priority, state, call_count, last_error_code FROM slots ORDER BY priority",
+        )
+        .toArray(),
+      cursor: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { cursor_slot_id: string }>(
+          "SELECT cursor_slot_id FROM pool_state WHERE singleton = 1",
+        )
+        .one().cursor_slot_id,
+      lease: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { lease_id: string; slot_id: string }>(
+          "SELECT lease_id, slot_id FROM lease WHERE singleton = 1",
+        )
+        .one(),
+      manifest: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { generation_id: string; layout_id: string }>(
+          "SELECT generation_id, layout_id FROM pool_manifest WHERE singleton = 1",
+        )
+        .one(),
+      versions: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { version: number }>(
+          "SELECT version FROM _key_pool_schema_migrations ORDER BY version",
+        )
+        .toArray()
+        .map(({ version }) => version),
+    }));
+    expect(persisted).toEqual({
+      slots: [
+        { slot_id: "key-03", priority: 1, state: "active", call_count: 0, last_error_code: null },
+        { slot_id: "key-02", priority: 2, state: "disabled_balance", call_count: 9, last_error_code: "balance" },
+        { slot_id: "key-01", priority: 3, state: "active", call_count: 0, last_error_code: null },
+        { slot_id: "key-04", priority: 4, state: "active", call_count: 0, last_error_code: null },
+        { slot_id: "key-05", priority: 5, state: "active", call_count: 0, last_error_code: null },
+      ],
+      cursor: "key-03",
+      lease: { lease_id: lease.leaseId, slot_id: "key-03" },
+      manifest: { generation_id: "primary-v2", layout_id: "ring-primary-v3" },
+      versions: [1, 2, 3],
+    });
+  });
+
+  it.each([
+    ["reorder", "ring-primary-reorder", ["key-03", "key-01", "key-02"]],
+    ["middle insertion", "ring-primary-middle", ["key-03", "key-04", "key-02", "key-01"]],
+    ["non-prefix removal", "ring-primary-removal", ["key-03", "key-01"]],
+    ["rename", "ring-primary-rename", ["key-03", "key-02", "key-renamed"]],
+  ] as const)("fails closed for same-generation %s", async (_label, layoutId, orderedSlotIds) => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration(layoutId, orderedSlotIds),
+        ]),
+      ),
+    ).rejects.toThrow("KEY_POOL_LAYOUT_PREFIX_REQUIRED");
+    await expect(stub.getStatus()).resolves.toMatchObject({
+      currentSlotId: "key-03",
+      slots: [
+        { slotId: "key-03", priority: 1 },
+        { slotId: "key-02", priority: 2 },
+        { slotId: "key-01", priority: 3 },
+      ],
+    });
+  });
+
+  it.each([
+    ["duplicate slot", ["key-03", "key-02", "key-02"]],
+    ["catalog-external slot", ["key-03", "key-02", "key-01", "key-06"]],
+  ] as const)("rejects an invalid target layout with a %s", async (_label, orderedSlotIds) => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration("ring-invalid", orderedSlotIds),
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_KEY_POOL_LAYOUT");
+  });
+
+  it("rejects non-contiguous persisted priorities without repairing the object", async () => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        state.storage.sql.exec("UPDATE slots SET priority = 99 WHERE slot_id = 'key-01'");
+        state.storage.sql.exec("UPDATE slots SET priority = 4 WHERE slot_id = 'key-01'");
+      });
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_STORED_KEY_POOL_LAYOUT");
+  });
+
+  it("fails closed for generation mismatch and unknown stored metadata", async () => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    const mismatchTarget = {
+      layoutId: "ring-other-v1",
+      generationId: "other-v3",
+      orderedSlotIds: ["key-03", "key-02", "key-01", "key-04"],
+    } as const;
+    const mismatchConfiguration = syntheticPersistenceConfiguration(
+      mismatchTarget.layoutId,
+      mismatchTarget.orderedSlotIds,
+    );
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          {
+            ...mismatchConfiguration,
+            generation: { generationId: "other-v3", objectName: "private-key-pool-v3" },
+            targetLayout: mismatchTarget,
+            knownLayouts: [mismatchConfiguration.knownLayouts[0], mismatchTarget],
+          },
+        ]),
+      ),
+    ).rejects.toThrow("KEY_POOL_GENERATION_MISMATCH");
+
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        "UPDATE pool_manifest SET generation_id = 'unknown-generation' WHERE singleton = 1",
+      ),
+    );
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow("KEY_POOL_GENERATION_MISMATCH");
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE pool_manifest SET generation_id = 'primary-v2' WHERE singleton = 1",
+      );
+      state.storage.sql.exec(
+        "UPDATE pool_manifest SET layout_id = 'unknown-layout' WHERE singleton = 1",
+      );
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow("UNKNOWN_STORED_KEY_POOL_LAYOUT");
+  });
+
+  it("uses the primary pool's persisted three-slot layout for attempts and eviction", async () => {
+    const stub = primaryKeyPool();
+    const first = await acquireLease(stub, "primary-attempts", BASE_TIME, ["key-03"]);
+    expect(first).toMatchObject({ ok: true, slotId: "key-02" });
+    await evictDurableObject(stub);
+    await expect(acquireLease(stub, "primary-overlap", BASE_TIME + 1)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(
+      runInDurableObject(stub, (instance) =>
+        Reflect.apply(instance.acquireLease, instance, [
+          {
+            requestId: "too-many-attempts",
+            attemptedSlotIds: ["key-03", "key-02", "key-01", "key-03"],
+            now: BASE_TIME + 2,
+          },
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_ATTEMPTED_SLOTS");
+  });
+
+  it.each([
+    [
+      "a missing required table",
+      (sql: SqlStorage) => sql.exec("DROP TABLE lease"),
+      "INVALID_KEY_POOL_SCHEMA",
+    ],
+    [
+      "a too-new schema marker",
+      (sql: SqlStorage) =>
+        sql.exec(
+          "INSERT INTO _key_pool_schema_migrations (version, applied_at) VALUES (4, ?)",
+          BASE_TIME,
+        ),
+      "KEY_POOL_SCHEMA_TOO_NEW",
+    ],
+    [
+      "an incomplete schema marker",
+      (sql: SqlStorage) => sql.exec("DELETE FROM _key_pool_schema_migrations WHERE version = 3"),
+      "INVALID_KEY_POOL_SCHEMA",
+    ],
+    [
+      "a missing manifest row",
+      (sql: SqlStorage) => sql.exec("DELETE FROM pool_manifest"),
+      "INVALID_KEY_POOL_MANIFEST",
+    ],
+    [
+      "a missing persisted slot",
+      (sql: SqlStorage) => sql.exec("DELETE FROM slots WHERE slot_id = 'key-01'"),
+      "INVALID_STORED_KEY_POOL_LAYOUT",
+    ],
+    [
+      "an unknown cursor",
+      (sql: SqlStorage) =>
+        sql.exec("UPDATE pool_state SET cursor_slot_id = 'key-99' WHERE singleton = 1"),
+      "INVALID_STORED_POOL_CURSOR",
+    ],
+    [
+      "an unknown leased slot",
+      (sql: SqlStorage) =>
+        sql.exec(
+          `INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at)
+           VALUES (1, 'invalid-lease', 'invalid-request', 'key-99', ?)`,
+          BASE_TIME + 1,
+        ),
+      "INVALID_STORED_POOL_LEASE",
+    ],
+  ] as const)("fails closed when a versioned pool has %s", async (_label, mutate, error) => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    await runInDurableObject(stub, (_instance, state) => mutate(state.storage.sql));
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow(error);
+  });
+
+  it.each([
+    ["markers [2,3]", "DELETE FROM _key_pool_schema_migrations WHERE version = 1"],
+    ["markers [1,3]", "DELETE FROM _key_pool_schema_migrations WHERE version = 2"],
+    ["only marker [3]", "DELETE FROM _key_pool_schema_migrations WHERE version < 3"],
+  ] as const)("rejects primary schema with %s without mutating persisted state", async (_label, sql) => {
+    const stub = primaryKeyPool();
+    const lease = await acquireLease(stub, `damaged-schema-${_label}`, BASE_TIME);
+    if (!lease.ok) throw new Error("fixture-lease-not-acquired");
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        state.storage.sql.exec(
+          `UPDATE slots SET state = 'disabled_balance', last_error_code = 'balance',
+             call_count = 11, updated_at = ? WHERE slot_id = 'key-02'`,
+          BASE_TIME - 1,
+        );
+        state.storage.sql.exec(sql);
+      });
+    });
+    const before = await versionedPersistenceSnapshot(stub);
+
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME + 1,
+          syntheticPersistenceConfiguration("ring-primary-v1", [
+            "key-03",
+            "key-02",
+            "key-01",
+          ]),
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_KEY_POOL_SCHEMA");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(before);
+  });
+
+  it.each([
+    [
+      "a too-new schema marker",
+      (sql: SqlStorage) =>
+        sql.exec(
+          "INSERT INTO _key_pool_schema_migrations (version, applied_at) VALUES (3, ?)",
+          BASE_TIME,
+        ),
+      "KEY_POOL_SCHEMA_TOO_NEW",
+    ],
+    [
+      "an unknown cursor",
+      (sql: SqlStorage) =>
+        sql.exec("UPDATE pool_state SET cursor_slot_id = 'key-99' WHERE singleton = 1"),
+      "INVALID_STORED_POOL_CURSOR",
+    ],
+    [
+      "an extra slot",
+      (sql: SqlStorage) =>
+        sql.exec(
+          `INSERT INTO slots (
+             slot_id, priority, state, reset_at, cooldown_until,
+             last_error_code, call_count, updated_at
+           ) VALUES ('key-03', 3, 'active', NULL, NULL, NULL, 0, 0)`,
+        ),
+      "KEY_SLOT_MANIFEST_REMOVAL_UNSUPPORTED",
+    ],
+  ] as const)("keeps the legacy compatibility initializer fail-closed for %s", async (_label, mutate, error) => {
+    const stub = keyPool();
+    await stub.getStatus();
+    await runInDurableObject(stub, (_instance, state) => mutate(state.storage.sql));
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        initializeKeyPoolSchema(state.storage, BASE_TIME),
+      ),
+    ).rejects.toThrow(error);
+  });
+
   it("persists quota-driven cursor movement as key-01 to key-02 to key-01", async () => {
     const stub = keyPool();
 
@@ -815,3 +1291,68 @@ describe("KeyPool SQLite Durable Object", () => {
     });
   });
 });
+
+async function legacyPersistenceSnapshot(stub: ReturnType<typeof keyPool>) {
+  return runInDurableObject(stub, (_instance, state) => ({
+    slots: state.storage.sql.exec("SELECT * FROM slots ORDER BY priority").toArray(),
+    lease: state.storage.sql.exec("SELECT * FROM lease").toArray(),
+    cursor: state.storage.sql.exec("SELECT * FROM pool_state").toArray(),
+    markers: state.storage.sql
+      .exec("SELECT * FROM oauth_replay_marker ORDER BY marker_id")
+      .toArray(),
+    versions: state.storage.sql
+      .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
+      .toArray(),
+  }));
+}
+
+async function versionedPersistenceSnapshot(stub: ReturnType<typeof primaryKeyPool>) {
+  return runInDurableObject(stub, (_instance, state) => ({
+    slots: state.storage.sql.exec("SELECT * FROM slots ORDER BY priority").toArray(),
+    lease: state.storage.sql.exec("SELECT * FROM lease").toArray(),
+    cursor: state.storage.sql.exec("SELECT * FROM pool_state").toArray(),
+    manifest: state.storage.sql.exec("SELECT * FROM pool_manifest").toArray(),
+    versions: state.storage.sql
+      .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
+      .toArray(),
+  }));
+}
+
+function syntheticPersistenceConfiguration(
+  layoutId: string,
+  orderedSlotIds: readonly string[],
+) {
+  const knownLayouts = [
+    {
+      layoutId: "ring-primary-v1",
+      generationId: "primary-v2",
+      orderedSlotIds: ["key-03", "key-02", "key-01"],
+    },
+    ...(layoutId === "ring-primary-v3"
+      ? [
+          {
+            layoutId: "ring-primary-v2",
+            generationId: "primary-v2",
+            orderedSlotIds: ["key-03", "key-02", "key-01", "key-04"],
+          },
+        ]
+      : []),
+    ...(layoutId === "ring-primary-v1"
+      ? []
+      : [{ layoutId, generationId: "primary-v2", orderedSlotIds }]),
+  ];
+  return {
+    catalog: [
+      { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
+      { slotId: "key-02", secretBinding: "WIND_API_KEY_02" },
+      { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
+      { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
+      { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
+      { slotId: "key-renamed", secretBinding: "WIND_API_KEY_RENAMED" },
+    ],
+    generation: { generationId: "primary-v2", objectName: "private-key-pool-v2" },
+    targetLayout: knownLayouts.at(-1),
+    knownLayouts,
+    preserveLegacySchema: false,
+  };
+}

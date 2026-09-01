@@ -5,6 +5,7 @@ import { loadManifest } from "../contracts/load-manifest";
 import { classifyWindFailure } from "../errors/classifier";
 import type { ClassifiedFailure, WindFailureCategory } from "../errors/types";
 import { acquireKeyPoolLease } from "../key-pool/client";
+import { getKeyPoolConfiguration } from "../key-pool/slots";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool/types";
 import { emitLogEvent, type GatewayLogEvent } from "../logging/event";
 import type { OpsNoticeV1 } from "../notices/types";
@@ -377,10 +378,11 @@ function resolveToolRoute(toolName: string): ToolRoute | null {
 function keyPoolFromEnvironment(
   env: InvocationDependencies["env"],
 ): InvocationKeyPool {
-  const stub = env.KEY_POOL.getByName("private-key-pool");
+  const configuration = getKeyPoolConfiguration(env.KEY_POOL_LAYOUT_ID);
+  const stub = env.KEY_POOL.getByName(configuration.generation.objectName);
   return {
     acquire: (requestId, attemptedSlotIds) =>
-      acquireKeyPoolLease(env, requestId, attemptedSlotIds),
+      acquireKeyPoolLease(env, requestId, attemptedSlotIds, configuration.generation.objectName),
     report: (input) => stub.reportOutcome(input),
     ...(env.DEPLOYMENT_STAGE === "staging"
       ? { consumeTestOutcome: (slotId: SlotId) => stub.consumeNextTestOutcome(slotId) }
