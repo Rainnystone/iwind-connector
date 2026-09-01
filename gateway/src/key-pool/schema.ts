@@ -338,6 +338,15 @@ function assertStoredLayout(
   if (new Set(rows.map(({ slot_id: slotId }) => slotId)).size !== rows.length) {
     throw new Error("INVALID_STORED_KEY_POOL_LAYOUT");
   }
+  if (
+    storedLayout.predecessorLayoutId === null &&
+    !sameSlots(
+      rows.map(({ slot_id: slotId }) => slotId),
+      storedLayout.initialRingOrder,
+    )
+  ) {
+    throw new Error("INVALID_STORED_KEY_POOL_LAYOUT");
+  }
   return rows;
 }
 

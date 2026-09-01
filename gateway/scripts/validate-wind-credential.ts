@@ -19,11 +19,19 @@ export interface CredentialValidatorDependencies {
 }
 
 type CredentialResponseShape = Readonly<{
-  type: "object" | "array" | "primitive";
-  keys?: readonly string[];
-  contentCount?: number;
-  contentTypes?: readonly string[];
+  contentCount: number;
+  contentTypes: readonly SafeContentType[];
 }>;
+
+type SafeContentType = "audio" | "image" | "resource" | "resource_link" | "text" | "unknown";
+
+const SAFE_CONTENT_TYPES = new Set<SafeContentType>([
+  "audio",
+  "image",
+  "resource",
+  "resource_link",
+  "text",
+]);
 
 export type CredentialValidationResult =
   | {
@@ -48,8 +56,9 @@ export async function validateWindCredential(
   try {
     session = await dependencies.createSession(credential);
     const result = await session.callTool(REPRESENTATIVE_TOOL, REPRESENTATIVE_INPUT);
-    if (!isToolError(result)) {
-      outcome = { slot: requestedSlot, status: "success", responseShape: summarizeShape(result) };
+    const responseShape = summarizeToolResponse(result);
+    if (responseShape !== null) {
+      outcome = { slot: requestedSlot, status: "success", responseShape };
     }
   } catch {
     outcome = { slot: requestedSlot, status: "failure" };
@@ -62,24 +71,33 @@ export async function validateWindCredential(
   return outcome;
 }
 
-function summarizeShape(value: unknown): CredentialResponseShape {
-  if (Array.isArray(value)) return { type: "array" };
-  if (!isRecord(value)) return { type: "primitive" };
-  const content = Array.isArray(value.content) ? value.content : [];
+function summarizeToolResponse(value: unknown): CredentialResponseShape | null {
+  if (!isRecord(value) || !Array.isArray(value.content)) return null;
+  if (
+    "isError" in value &&
+    (typeof value.isError !== "boolean" || value.isError)
+  ) {
+    return null;
+  }
+  if (
+    value.content.some(
+      (item) => !isRecord(item) || typeof item.type !== "string",
+    )
+  ) {
+    return null;
+  }
   return {
-    type: "object",
-    keys: Object.keys(value).sort(),
-    contentCount: content.length,
-    contentTypes: [...new Set(content.map(contentType))].sort(),
+    contentCount: value.content.length,
+    contentTypes: [
+      ...new Set(
+        value.content.map(({ type }) =>
+          SAFE_CONTENT_TYPES.has(type as SafeContentType)
+            ? (type as SafeContentType)
+            : "unknown",
+        ),
+      ),
+    ].sort(),
   };
-}
-
-function contentType(value: unknown): string {
-  return isRecord(value) && typeof value.type === "string" ? value.type : "unknown";
-}
-
-function isToolError(value: unknown): boolean {
-  return isRecord(value) && value.isError === true;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

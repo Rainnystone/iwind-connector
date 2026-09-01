@@ -138,6 +138,64 @@ describe("KeyPool SQLite Durable Object", () => {
 
   it.each([
     {
+      cursor: "key-03",
+      expectedOrder: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+    },
+    {
+      cursor: "key-02",
+      expectedOrder: ["key-05", "key-04", "key-02", "key-01", "key-03"],
+    },
+  ] as const)(
+    "migrates concrete ring-primary-v1 at $cursor to cursor-relative ring-primary-v2",
+    async ({ cursor, expectedOrder }) => {
+      const stub = primaryKeyPool();
+      await stub.getStatus();
+      await rewritePersistedPrimaryAsV1(stub, cursor, ["key-03", "key-02", "key-01"]);
+
+      await runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration([]),
+        ]),
+      );
+
+      const persisted = await versionedPersistenceSnapshot(stub);
+      expect(persisted.slots.map(({ slot_id: slotId }) => slotId)).toEqual(expectedOrder);
+      expect(persisted.cursor).toEqual([
+        { singleton: 1, cursor_slot_id: "key-05", updated_at: BASE_TIME },
+      ]);
+      expect(persisted.manifest).toEqual([
+        {
+          singleton: 1,
+          generation_id: "primary-v2",
+          layout_id: "ring-primary-v2",
+          updated_at: BASE_TIME,
+        },
+      ]);
+    },
+  );
+
+  it("rejects a reordered root ring-primary-v1 with zero writes", async () => {
+    const stub = primaryKeyPool();
+    await stub.getStatus();
+    await rewritePersistedPrimaryAsV1(stub, "key-03", ["key-03", "key-01", "key-02"]);
+    const before = await versionedPersistenceSnapshot(stub);
+
+    await expect(
+      runInDurableObject(stub, (_instance, state) =>
+        Reflect.apply(initializeKeyPoolSchema, undefined, [
+          state.storage,
+          BASE_TIME,
+          syntheticPersistenceConfiguration([]),
+        ]),
+      ),
+    ).rejects.toThrow("INVALID_STORED_KEY_POOL_LAYOUT");
+    expect(await versionedPersistenceSnapshot(stub)).toEqual(before);
+  });
+
+  it.each([
+    {
       label: "cursor key-05",
       cursor: "key-05",
       expectedOrder: ["key-06", "key-05", "key-04", "key-03", "key-02", "key-01"],
@@ -1475,6 +1533,37 @@ async function versionedPersistenceSnapshot(stub: ReturnType<typeof primaryKeyPo
       .exec("SELECT * FROM _key_pool_schema_migrations ORDER BY version")
       .toArray(),
   }));
+}
+
+async function rewritePersistedPrimaryAsV1(
+  stub: ReturnType<typeof primaryKeyPool>,
+  cursor: "key-02" | "key-03",
+  persistedOrder: readonly [string, string, string],
+): Promise<void> {
+  await runInDurableObject(stub, (_instance, state) => {
+    state.storage.transactionSync(() => {
+      state.storage.sql.exec("UPDATE slots SET priority = priority + 10");
+      state.storage.sql.exec("DELETE FROM slots WHERE slot_id IN ('key-04', 'key-05')");
+      for (const [index, slotId] of persistedOrder.entries()) {
+        state.storage.sql.exec(
+          "UPDATE slots SET priority = ? WHERE slot_id = ?",
+          index + 1,
+          slotId,
+        );
+      }
+      state.storage.sql.exec(
+        "UPDATE pool_state SET cursor_slot_id = ?, updated_at = ? WHERE singleton = 1",
+        cursor,
+        BASE_TIME - 1,
+      );
+      state.storage.sql.exec(
+        `UPDATE pool_manifest
+         SET layout_id = 'ring-primary-v1', updated_at = ?
+         WHERE singleton = 1`,
+        BASE_TIME - 1,
+      );
+    });
+  });
 }
 
 function syntheticPersistenceConfiguration(successors: readonly KeyPoolLayoutDefinition[]) {

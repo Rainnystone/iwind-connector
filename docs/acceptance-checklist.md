@@ -67,7 +67,7 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 
 - [x] Confirm the stable catalog is `key-01` through `key-05` while active `ring-primary-v2` is `key-05 → key-04 → key-03 → key-02 → key-01`; priority is persisted-layout-derived rather than slot identity.
 - [x] Confirm the old legacy pool remains schema v2 with no `pool_manifest`, while the new primary generation initializes schema v3 with a generation/layout manifest.
-- [x] Confirm a same-generation successor inserts its approved block immediately before the actual persisted cursor, atomically becomes cursor, and preserves old ring order, state, counters, and lease.
+- [x] Confirm a same-generation successor inserts its approved block immediately before the actual persisted cursor, moves the cursor to the block head, preserves every old slot's non-priority fields and old effective ring order, rejects a live lease with `KEY_POOL_LAYOUT_MIGRATION_BUSY` and zero writes, and transactionally cleans an expired lease.
 - [x] Confirm corrupt metadata, generation mismatch, reorder, deletion, rename, middle insertion, duplicate slots, and catalog-external slots fail closed without mutating persisted state.
 - [x] Confirm active business routing uses the primary generation while OAuth replay remains on the legacy object.
 - [x] Confirm the active ring remains quota-event failover—not per-request round-robin—with at most one upstream request active and no cursor advance for non-rotation errors.
@@ -79,9 +79,9 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [ ] Deploy and test the v2 **activate candidate** that switches to `ring-primary-v2`; retain the expand candidate as the minimum safe rollback target.
 - [ ] For an existing Worker, use the complete owner-only Secret file to `versions upload --config dist/wrangler.deploy.jsonc`, inspect the exact candidate with `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` through the installation names-only filter, then deploy exact `candidate@100% --config dist/wrangler.deploy.jsonc`; do not percentage-split the KeyPool deployment.
 - [ ] For first creation only, use one complete `wrangler deploy --config dist/wrangler.deploy.jsonc --secrets-file` deployment; do not use per-binding `secret put` as a standard deployment step.
-- [ ] Confirm the persisted manifest is the activated versioned object's runtime authority: compatible expand rollback reads the persisted successor layout while its environment active ID remains old; admin, test-control, lease, cursor, and acquisition all follow persisted layout; unknown/non-prefix layouts fail closed.
+- [ ] Confirm the persisted manifest is the activated versioned object's runtime authority: compatible expand rollback reads the persisted successor layout while its environment active ID remains old; admin, test-control, lease, cursor, and acquisition all follow persisted layout; unknown, skipped-transition, or divergent layouts fail closed.
 - [ ] For a reorder, deletion, rename, or middle insertion, prove a separate generation and blue-green plan rather than using ordinary expansion.
-- [ ] Keep the present Cloudflare production on its legacy two-slot generation until the PR is merged and a separately approved cutover is performed.
+- [ ] Keep the present Cloudflare production on its legacy two-slot generation until the separately human-approved expand-and-activate rollout is completed; a repository fast-forward does not authorize or evidence deployment.
 
 ## Timeout and retry contract
 
@@ -90,7 +90,7 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 
 ## Production cutover — v0.4 legacy evidence
 
-The checked items in this section are historical evidence for the already deployed `key-01 → key-02` legacy generation and its 12-binding version only. They do not evidence deployment of the v0.5 `key-03 → key-02 → key-01` primary layout, which remains pending the separately approved Task 5 cutover.
+The checked items in this section are historical evidence for the already deployed `key-01 → key-02` legacy generation and its 12-binding version only. They do not evidence deployment of either the v0.5 three-slot primary layout or the current v0.6 five-slot primary layout; the current rollout boundary is defined above.
 
 - [x] Re-render the deploy-only config with the same Worker, origin, KV, Durable Object, cron, and 12 required Secret bindings, changing only `DEPLOYMENT_STAGE` to `production`.
 - [x] Run a dry-run build and inspect the complete candidate before upload.

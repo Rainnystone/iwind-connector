@@ -30,13 +30,85 @@ describe("credential validator", () => {
       slot: "key-04",
       status: "success",
       responseShape: {
-        type: "object",
-        keys: ["content", "isError", "structuredContent"],
         contentCount: 1,
         contentTypes: ["text"],
       },
     });
     expect(calls).toEqual([["get_stock_price_indicators", { windcode: "600519.SH" }]]);
+    expect(closes).toBe(1);
+  });
+
+  it("maps hostile content types to unknown and never emits hostile fields or values", async () => {
+    let calls = 0;
+    const dependencies: CredentialValidatorDependencies = {
+      getCredential: () => "test-only-key",
+      createSession: async () => ({
+        async callTool() {
+          calls += 1;
+          return {
+            content: [
+              { type: "text", text: "private business payload" },
+              {
+                type: "HOSTILE_CONTENT_TYPE_WITH_KEY_MATERIAL",
+                HOSTILE_CONTENT_FIELD: "private field value",
+              },
+            ],
+            isError: false,
+            HOSTILE_TOP_LEVEL_FIELD: "private top-level value",
+          };
+        },
+        async close() {},
+      }),
+    };
+
+    const result = await validateWindCredential("key-04", dependencies);
+
+    expect(result).toEqual({
+      slot: "key-04",
+      status: "success",
+      responseShape: {
+        contentCount: 2,
+        contentTypes: ["text", "unknown"],
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("HOSTILE");
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(calls).toBe(1);
+  });
+
+  it.each([
+    ["null", null],
+    ["a primitive", "malformed"],
+    ["an array", []],
+    ["missing content", {}],
+    ["non-array content", { content: "malformed" }],
+    ["true isError", { content: [], isError: true }],
+    ["non-boolean isError", { content: [], isError: "false" }],
+    ["a null content item", { content: [null] }],
+    ["an array content item", { content: [[]] }],
+    ["a content item without type", { content: [{}] }],
+    ["a content item with non-string type", { content: [{ type: 7 }] }],
+  ] as const)("fails anonymously for %s after exactly one upstream call", async (_label, response) => {
+    let calls = 0;
+    let closes = 0;
+    const dependencies: CredentialValidatorDependencies = {
+      getCredential: () => "test-only-key",
+      createSession: async () => ({
+        async callTool() {
+          calls += 1;
+          return response as never;
+        },
+        async close() {
+          closes += 1;
+        },
+      }),
+    };
+
+    await expect(validateWindCredential("key-04", dependencies)).resolves.toEqual({
+      slot: "key-04",
+      status: "failure",
+    });
+    expect(calls).toBe(1);
     expect(closes).toBe(1);
   });
 

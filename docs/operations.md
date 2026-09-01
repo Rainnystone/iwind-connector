@@ -9,7 +9,7 @@
 
 The active primary generation has the stable catalog `key-01` through `key-05` and active `ring-primary-v2` layout `key-05 → key-04 → key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is runtime topology derived from the persisted layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout. The persisted manifest is the runtime authority for admin, test-control, lease, cursor, and acquisition.
 
-This code is not deployed to Cloudflare production yet. Production remains on the old two-slot generation until the feature PR is merged and a separately approved Task 5 cutover is performed. Do not treat a local primary-layout test as a completed deployment.
+This code is not deployed to Cloudflare production yet. Production remains on the old two-slot generation until the separately human-approved expand-and-activate rollout is completed. A tested fast-forward to `main` changes repository state only; it neither authorizes nor performs a Cloudflare rollout. Do not treat a local primary-layout test as a completed deployment.
 
 ## Admin request contract
 
@@ -54,7 +54,7 @@ node --env-file=../.secrets/iwind.keys.env node_modules/tsx/dist/cli.mjs gateway
 | Add ordinary capacity | Append only the new catalog/binding identities, then define a successor block before the actual persisted cursor in the same generation. | The new block becomes cursor; the old effective ring order remains intact. Use expand then activate. |
 | Reorder, delete, rename, or replace topology | Create a new generation and a new Durable Object name. | Use a dedicated blue-green plan; do not disguise it as ordinary expansion. |
 
-The catalog is append-only. A same-generation cursor-relative successor preserves every existing slot's state, call count, cursor, and live lease, inserting only the approved new block immediately before the persisted cursor. A corrupted manifest, generation mismatch, reorder, deletion, rename, duplicate, or catalog-external slot fails closed. Never repair SQLite by hand.
+The catalog is append-only. A same-generation cursor-relative migration preserves every old slot's non-priority fields and old effective ring order, inserts only the approved new block immediately before the persisted cursor, and moves the cursor to that block's head. A live lease blocks migration with `KEY_POOL_LAYOUT_MIGRATION_BUSY` and zero writes; an expired lease is deleted in the same migration transaction. A corrupted manifest, generation mismatch, reorder, deletion, rename, duplicate, or catalog-external slot fails closed. Never repair SQLite by hand.
 
 ## Future ordinary expansion: expand, then activate
 
@@ -64,7 +64,7 @@ This is an engineering and approved deployment action, not a live admin action.
 2. Build and verify the **expand candidate**. It must recognize the expanded catalog, candidate layout, and Secret binding, while `KEY_POOL_LAYOUT_ID` still selects the old active layout. Upload it through the complete-file candidate path only; do not activate the candidate layout yet.
 3. Verify the expand candidate against its unchanged active layout, including Secret-free scans and the relevant schema/layout tests. Keep this candidate available: once activation succeeds, it is the minimum safe rollback target because it already recognizes the new layout and can read the persisted successor layout.
 4. Build and verify the **activate candidate** with `KEY_POOL_LAYOUT_ID` changed to the approved successor layout. Activate it only after a separate cutover approval and validate the inserted block, atomic cursor handoff, persisted manifest, unchanged MCP URL, 31 tools, OAuth, notices, and strict serialization.
-5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision; the expand candidate can read the persisted successor layout while its environment active ID remains old. Unknown or non-prefix persisted layouts fail closed. Record identifiers in the private deployment record, never in this public runbook.
+5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision; the expand candidate can read the persisted successor layout while its environment active ID remains old. Unknown, skipped-transition, or divergent persisted layouts fail closed. Record identifiers in the private deployment record, never in this public runbook.
 
 ## Disable or restore a Key
 

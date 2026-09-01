@@ -28,4 +28,8 @@ If public errors remain sanitized, use the request ID to locate one allowlisted 
 
 ## Layout or generation rejection
 
-`INVALID_KEY_POOL_LAYOUT`, `KEY_POOL_LAYOUT_PREFIX_REQUIRED`, `KEY_POOL_GENERATION_MISMATCH`, and unknown/corrupt stored-layout failures are fail-closed safeguards, not retryable Wind failures. Stop the rollout and compare active layout, object generation, and persisted manifest. Do not reorder a catalog or edit a Durable Object database. A normal successor inserts its new block immediately before the actual persisted cursor; for reorder, deletion, or rename, prepare a new generation and blue-green cutover.
+`INVALID_KEY_POOL_LAYOUT`, `KEY_POOL_GENERATION_MISMATCH`, and unknown/corrupt stored-layout failures are fail-closed safeguards, not retryable Wind failures. Stop the rollout and compare active layout, object generation, and persisted manifest. Do not reorder a catalog or edit a Durable Object database. A normal successor inserts its new block immediately before the actual persisted cursor; for reorder, deletion, or rename, prepare a new generation and blue-green cutover.
+
+- `KEY_POOL_LAYOUT_TRANSITION_REQUIRED`: the candidate tried to skip one or more direct-successor transitions. Activate each approved successor in order; do not force a manifest jump.
+- `KEY_POOL_LAYOUT_DIVERGENCE`: the candidate and persisted layout are on different successor branches. Stop that candidate and reconcile the intended lineage; use a new generation for an intentional topology replacement.
+- `KEY_POOL_LAYOUT_MIGRATION_BUSY`: a live lease blocked migration with zero writes. Let the active request finish or the lease expire, then retry the same approved candidate; do not delete the lease by hand or rotate a Key.
