@@ -19,7 +19,7 @@ The exact Wind classification and retry contract lives in [error taxonomy](error
 
 | Stable code or symptom | Meaning | Check |
 | --- | --- | --- |
-| `ACCESS_CONFIGURATION_INVALID` | An OIDC value is empty or a token/JWKS/issuer URL is not HTTPS. | Compare deployed binding names with `gateway/wrangler.jsonc` → `secrets.required`; correct the complete owner-only Secret file, upload a candidate, inspect names only, then explicitly deploy that candidate at 100%. |
+| `ACCESS_CONFIGURATION_INVALID` | An OIDC value is empty or a token/JWKS/issuer URL is not HTTPS. | Compare deployed binding names with `gateway/wrangler.jsonc` → `secrets.required`; correct the complete owner-only Secret file, upload a candidate, run `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` through the installation names-only filter, then explicitly deploy that candidate at 100% with the same config. |
 | `ACCESS_IDENTITY_REJECTED` | Token exchange, signature/claims, nonce, subject, or the single allowed email failed validation. | Check Access client configuration, issuer, audience, JWKS reachability, clock, and the approved email. Never log the ID token. |
 | `OAUTH_SESSION_INVALID` / `OAUTH_SESSION_EXPIRED` | The sealed authorization or consent session is absent, malformed, replayed, or older than its allowed window. | Restart authorization in a clean browser session; confirm HTTPS origin, cookie support, and clock. Do not reuse callback URLs. |
 | OAuth client resolution or redirect error | Dynamic client registration or the requested redirect/scope was rejected. | Register the exact `{PUBLIC_ORIGIN}/mcp` endpoint again and complete a fresh authorization. Do not invent platform fields; use that platform's current MCP documentation. |

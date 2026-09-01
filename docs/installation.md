@@ -84,10 +84,41 @@ The checked-in `gateway/wrangler.jsonc` is the source configuration and retains 
      --secrets-file ../.secrets/iwind.cloudflare.env
    ```
 
-   Re-run the full verification and Secret scan, inspect `dist/wrangler.deploy.jsonc`, and perform names-only candidate inspection. After a separate cutover approval, deploy that exact candidate at 100% with no percentage split:
+   Re-run the full verification and Secret scan, inspect `dist/wrangler.deploy.jsonc`, then inspect the **exact** candidate through the same rendered config. This fail-closed filter emits only binding names plus the non-Secret layout/stage values; it never prints values, account data, author data, or the candidate ID. Compare `secretBindingNames` with the required-names list from step 3, and confirm the expected `keyPoolLayoutId` and `deploymentStage` before cutover:
 
    ```bash
-   npx --no-install wrangler versions deploy <candidate>@100%
+   npx --no-install wrangler versions view <candidate> \
+     --config dist/wrangler.deploy.jsonc \
+     --json |
+   node -e '
+   let input="";
+   process.stdin.setEncoding("utf8");
+   process.stdin.on("data", (chunk) => { input += chunk; });
+   process.stdin.on("end", () => {
+     try {
+       const bindings = JSON.parse(input)?.resources?.bindings;
+       if (!Array.isArray(bindings)) process.exit(1);
+       const text = (name) => bindings.find((binding) => binding?.name === name && binding?.type === "plain_text")?.text;
+       const summary = {
+         bindingNames: bindings.map((binding) => binding?.name).filter((name) => typeof name === "string").sort(),
+         secretBindingNames: bindings.filter((binding) => binding?.type === "secret_text").map((binding) => binding.name).sort(),
+         keyPoolLayoutId: text("KEY_POOL_LAYOUT_ID"),
+         deploymentStage: text("DEPLOYMENT_STAGE"),
+       };
+       if (summary.keyPoolLayoutId === undefined || summary.deploymentStage === undefined) process.exit(1);
+       process.stdout.write(`${JSON.stringify(summary)}\n`);
+     } catch {
+       process.exit(1);
+     }
+   });
+   '
+   ```
+
+   After a separate cutover approval, deploy that exact candidate at 100% with the same config and no percentage split:
+
+   ```bash
+   npx --no-install wrangler versions deploy <candidate>@100% \
+     --config dist/wrangler.deploy.jsonc
    ```
 6. **For the first Worker creation only**, make one complete approved deployment instead of uploading a partial version:
 

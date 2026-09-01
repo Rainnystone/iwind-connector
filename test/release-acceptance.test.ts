@@ -63,25 +63,45 @@ describe("runtime-neutral release acceptance contract", () => {
   });
 
   it("keeps deployment documentation on complete-secret candidate versions", async () => {
-    const [installation, security, operations, troubleshooting, checklist] = await Promise.all([
+    const [installation, security, operations, troubleshooting, checklist, readme] = await Promise.all([
       readFile(path.join(ROOT, "docs", "installation.md"), "utf8"),
       readFile(path.join(ROOT, "docs", "security.md"), "utf8"),
       readFile(path.join(ROOT, "docs", "operations.md"), "utf8"),
       readFile(path.join(ROOT, "docs", "troubleshooting.md"), "utf8"),
       readFile(path.join(ROOT, "docs", "acceptance-checklist.md"), "utf8"),
+      readFile(path.join(ROOT, "README.md"), "utf8"),
     ]);
 
-    expect(installation).toContain("wrangler versions upload");
-    expect(installation).toContain("--secrets-file ../.secrets/iwind.cloudflare.env");
-    expect(installation).toContain("wrangler versions deploy <candidate>@100%");
-    expect(installation).toContain("wrangler deploy");
+    const existingUpload = `npx --no-install wrangler versions upload \\
+     --config dist/wrangler.deploy.jsonc \\
+     --secrets-file ../.secrets/iwind.cloudflare.env`;
+    const candidateInspection = `npx --no-install wrangler versions view <candidate> \\
+     --config dist/wrangler.deploy.jsonc \\
+     --json`;
+    const exactDeploy = `npx --no-install wrangler versions deploy <candidate>@100% \\
+     --config dist/wrangler.deploy.jsonc`;
+    const firstCreate = `npx --no-install wrangler deploy \\
+     --config dist/wrangler.deploy.jsonc \\
+     --secrets-file ../.secrets/iwind.cloudflare.env`;
+
+    expect(installation).toContain(existingUpload);
+    expect(installation).toContain(candidateInspection);
+    expect(installation).toContain(exactDeploy);
+    expect(installation).toContain(firstCreate);
+    expect(operations).toContain("versions view <candidate> --config dist/wrangler.deploy.jsonc --json");
+    expect(operations).toContain(exactDeploy);
+    expect(security).toContain("--config dist/wrangler.deploy.jsonc");
+    expect(troubleshooting).toContain("versions view <candidate>");
+    expect(checklist).toContain("versions view <candidate>");
+    expect(checklist).toContain("wrangler deploy --config dist/wrangler.deploy.jsonc --secrets-file");
+    expect(readme).toContain("versions view <candidate>");
+    expect(installation).toContain("no percentage split");
+    expect(checklist).toContain("do not percentage-split");
     expect(security).toMatch(/secret put[^\n]+immediately deploy/iu);
     expect(operations).toContain("persisted manifest is the runtime authority");
     expect(operations).toContain("expand candidate can read the persisted successor layout");
-    expect(troubleshooting).toContain("complete owner-only Secret file");
-    expect(checklist).toContain("versions upload");
-    expect(checklist).toContain("candidate@100%");
     expect(checklist).not.toContain("wrangler secret put NAME_FROM_REQUIRED_LIST");
+    expect(operations).not.toContain("wrangler secret put WIND_API_KEY_");
   });
 });
 

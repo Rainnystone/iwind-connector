@@ -131,7 +131,7 @@ WIND_API_KEY_03=替换为第三枚Key
 
 Cloudflare 部署还需要 `gateway/wrangler.jsonc` 中 `secrets.required` 列出的 Secret binding。它们的值必须通过受保护的输入方式提供，不能把仓库里的安全占位值替换成生产值。
 
-经批准的部署必须使用[安装说明](docs/installation.md)中的完整 owner-only Cloudflare Secret 文件：已存在的 Worker 先 `versions upload` 一个未部署 candidate，做 names-only inspection，再显式 exact `@100%` 部署；首次创建才用一次完整 `deploy --secrets-file`。不要逐项使用 `secret put`，因为它会立即部署一个 version。
+经批准的部署必须使用[安装说明](docs/installation.md)中的完整 owner-only Cloudflare Secret 文件：已存在的 Worker 先 `versions upload` 一个未部署 candidate，再以同一 rendered config 运行 exact `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` 的 names-only inspection，最后用同一 config 显式 exact `@100%` 部署；首次创建才用一次完整 `deploy --secrets-file`。不要逐项使用 `secret put`，因为它会立即部署一个 version。
 
 ### 3. 验证代码
 

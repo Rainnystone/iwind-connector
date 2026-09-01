@@ -34,10 +34,11 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
    npx --no-install wrangler versions upload \
      --config dist/wrangler.deploy.jsonc \
      --secrets-file ../.secrets/iwind.cloudflare.env
-   npx --no-install wrangler versions deploy <candidate>@100%
+   npx --no-install wrangler versions deploy <candidate>@100% \
+     --config dist/wrangler.deploy.jsonc
    ```
 
-   Never percentage-split or use `wrangler secret put`: it creates and immediately deploys a version. Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
+   Before the deploy command, run the exact `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` names-only filter printed in [installation](installation.md), not a raw JSON dump; it may emit only binding names, `KEY_POOL_LAYOUT_ID`, and `DEPLOYMENT_STAGE`. Never percentage-split or use `wrangler secret put`: it creates and immediately deploys a version. Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
 5. Run `npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'`. A pass proves the current exact values do not occur in delivery source or the packaged Skill.
 6. Restore the slot, then inspect status again. Restore changes state only; it does not validate the replacement. Complete the change with one approved representative read-only call and confirm the slot returns to normal operation without a failure notice.
 
