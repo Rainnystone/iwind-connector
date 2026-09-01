@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { handleAdminRequest } from "../../src/admin/handler";
 import type { WindFailureCategory } from "../../src/errors/types";
-import { KEY_SLOT_DEFINITIONS } from "../../src/key-pool/slots";
+import { KEY_POOL_LAYOUT_ID, getKeySlotDefinitions } from "../../src/key-pool/slots";
 
 const ADMIN_TOKEN = "independent-admin-token";
 const NOW = Date.UTC(2035, 7, 24);
@@ -63,10 +63,7 @@ describe("independent admin surface", () => {
 
   it("accepts restore and disable routes for every manifest slot", async () => {
     const fixture = adminEnv("staging");
-    const activeDefinitions = [
-      { slotId: "key-03" },
-      ...KEY_SLOT_DEFINITIONS,
-    ];
+    const activeDefinitions = getKeySlotDefinitions(KEY_POOL_LAYOUT_ID);
     for (const definition of activeDefinitions) {
       await expect(
         handleAdminRequest(
@@ -89,6 +86,52 @@ describe("independent admin surface", () => {
         ["restore", slotId, NOW + 1],
       ]),
     );
+  });
+
+  it("accepts only active-layout slots for admin routes and staging controls", async () => {
+    const primary = adminEnv("staging");
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/key-pool/slots/key-03/disable", "POST", {}),
+        primary,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/test-controls/next-outcome", "POST", {
+          slotId: "key-03",
+          category: "daily_quota",
+          times: 1,
+        }),
+        primary,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
+    expect(primary.calls).toEqual([["disable", "key-03", NOW]]);
+    expect(primary.controls).toEqual([{ slotId: "key-03", category: "daily_quota" }]);
+
+    const legacy = adminEnv("staging", "ring-legacy-v1");
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/key-pool/slots/key-03/disable", "POST", {}),
+        legacy,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 404 });
+    await expect(
+      handleAdminRequest(
+        adminRequest("/admin/test-controls/next-outcome", "POST", {
+          slotId: "key-03",
+          category: "daily_quota",
+          times: 1,
+        }),
+        legacy,
+        NOW,
+      ),
+    ).resolves.toMatchObject({ status: 400 });
+    expect(legacy.calls).toEqual([]);
+    expect(legacy.controls).toEqual([]);
   });
 
   it("requires exact JSON objects and exact admin routes", async () => {
@@ -169,7 +212,10 @@ function adminRequest(path: string, method = "GET", body?: object): Request {
   });
 }
 
-function adminEnv(stage: "local" | "staging" | "production") {
+function adminEnv(
+  stage: "local" | "staging" | "production",
+  keyPoolLayoutId = KEY_POOL_LAYOUT_ID,
+) {
   const calls: Array<[string, string, number]> = [];
   const objectNames: string[] = [];
   const controls: Array<{ slotId: string; category: WindFailureCategory }> = [];
@@ -216,7 +262,7 @@ function adminEnv(stage: "local" | "staging" | "production") {
         return stub;
       },
     },
-    KEY_POOL_LAYOUT_ID: "ring-primary-v1",
+    KEY_POOL_LAYOUT_ID: keyPoolLayoutId,
     calls,
     controls,
     objectNames,

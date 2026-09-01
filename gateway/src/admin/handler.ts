@@ -1,5 +1,5 @@
 import { authenticateAdmin } from "./authenticate";
-import { getKeyPoolConfiguration, isSlotId } from "../key-pool/slots";
+import { getKeyPoolConfiguration, isSlotIdInLayout } from "../key-pool/slots";
 import type { SlotId } from "../key-pool/types";
 import { hasExactKeys, parseTestControl } from "./test-control";
 
@@ -21,7 +21,8 @@ export async function handleAdminRequest(
     return notFound();
   }
 
-  const route = matchRoute(url.pathname);
+  const configuration = getKeyPoolConfiguration(env.KEY_POOL_LAYOUT_ID);
+  const route = matchRoute(url.pathname, configuration.layout.layoutId);
   if (route === null) return notFound();
   if (request.method !== route.method) {
     return new Response("Method Not Allowed", { status: 405, headers: { allow: route.method } });
@@ -38,9 +39,7 @@ export async function handleAdminRequest(
   }
   if (authentication === "rejected") return new Response("Forbidden", { status: 403 });
 
-  const keyPool = env.KEY_POOL.getByName(
-    getKeyPoolConfiguration(env.KEY_POOL_LAYOUT_ID).generation.objectName,
-  );
+  const keyPool = env.KEY_POOL.getByName(configuration.generation.objectName);
   if (route.kind === "status") {
     const status = await keyPool.getStatus();
     return Response.json(
@@ -75,7 +74,7 @@ export async function handleAdminRequest(
     return new Response(null, { status: 204 });
   }
 
-  const outcome = parseTestControl(body.value);
+  const outcome = parseTestControl(body.value, configuration.layout.layoutId);
   if (outcome === null) return new Response("Bad Request", { status: 400 });
   await keyPool.setNextTestOutcome(outcome);
   return new Response(null, { status: 204 });
@@ -91,11 +90,15 @@ type AdminRoute =
     }
   | { readonly kind: "test-control"; readonly method: "POST" };
 
-function matchRoute(pathname: string): AdminRoute | null {
+function matchRoute(pathname: string, layoutId: string): AdminRoute | null {
   if (pathname === "/admin/key-pool") return { kind: "status", method: "GET" };
   if (pathname === TEST_CONTROL_PATH) return { kind: "test-control", method: "POST" };
   const match = pathname.match(/^\/admin\/key-pool\/slots\/([^/]+)\/(restore|disable)$/u);
-  if (match === null || !isSlotId(match[1]) || (match[2] !== "restore" && match[2] !== "disable")) {
+  if (
+    match === null ||
+    !isSlotIdInLayout(match[1], layoutId) ||
+    (match[2] !== "restore" && match[2] !== "disable")
+  ) {
     return null;
   }
   return { kind: "slot", method: "POST", slotId: match[1], action: match[2] };

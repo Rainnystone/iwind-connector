@@ -1,5 +1,5 @@
 import type { WindFailureCategory } from "../errors/types";
-import { isSlotId } from "../key-pool/slots";
+import { isSlotIdInLayout } from "../key-pool/slots";
 import type { PendingTestOutcome } from "../key-pool/types";
 
 const ALLOWED_CATEGORIES = new Set<WindFailureCategory>([
@@ -15,9 +15,11 @@ const ALLOWED_CATEGORIES = new Set<WindFailureCategory>([
   "unknown",
 ]);
 
-export function parseTestControl(value: unknown): PendingTestOutcome | null {
+export function parseTestControl(value: unknown, layoutId: string): PendingTestOutcome | null {
   if (!isRecord(value) || !hasExactKeys(value, ["slotId", "category", "times"])) return null;
-  if (!isSlotId(value.slotId) || !isFailureCategory(value.category) || value.times !== 1) return null;
+  if (!isSlotIdInLayout(value.slotId, layoutId) || !isFailureCategory(value.category) || value.times !== 1) {
+    return null;
+  }
   return { slotId: value.slotId, category: value.category };
 }
 
