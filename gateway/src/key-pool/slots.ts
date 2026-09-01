@@ -25,6 +25,8 @@ export const KEY_SLOT_CATALOG = [
   { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
   { slotId: "key-02", secretBinding: "WIND_API_KEY_02" },
   { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
+  { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
+  { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
 ] as const satisfies readonly KeySlotCatalogEntry[];
 
 export type SlotId = (typeof KEY_SLOT_CATALOG)[number]["slotId"];
@@ -52,10 +54,18 @@ export const KEY_POOL_LAYOUTS = {
     initialRingOrder: ["key-03", "key-02", "key-01"],
     insertedBeforeCursorSlotIds: [],
   },
+  "ring-primary-v2": {
+    layoutId: "ring-primary-v2",
+    generationId: "primary-v2",
+    predecessorLayoutId: "ring-primary-v1",
+    slotIds: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+    initialRingOrder: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+    insertedBeforeCursorSlotIds: ["key-05", "key-04"],
+  },
 } as const satisfies Readonly<Record<string, KeyPoolLayoutDefinition>>;
 
 export const LEGACY_KEY_POOL_LAYOUT_ID = "ring-legacy-v1";
-export const KEY_POOL_LAYOUT_ID = "ring-primary-v1";
+export const KEY_POOL_LAYOUT_ID = "ring-primary-v2";
 
 type ConfiguredKeySlotDefinition = (typeof KEY_SLOT_CATALOG)[number];
 type KeyPoolLayoutId = keyof typeof KEY_POOL_LAYOUTS;

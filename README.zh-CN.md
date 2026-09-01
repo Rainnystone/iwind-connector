@@ -23,7 +23,7 @@ ChatGPT Work / Grok Web / 本地 Agent
                 Cloudflare Worker 网关
                 ├── OAuth 与访问控制
                 ├── 31 个只读工具清单
-                ├── 有序 KeyPool 严格串行（active primary ring 为三槽）
+                ├── 有序 KeyPool 严格串行（active primary ring 为五槽）
                 └── 脱敏的运维提示
                          │
                          ▼
@@ -40,7 +40,7 @@ ChatGPT Work / Grok Web / 本地 Agent
 | 31 个只读工具 | 覆盖股票、基金、指数、宏观经济、公告/新闻和支持的金融分析。 |
 | 运行时中立 Skill | 同一个 Skill zip 可以在支持的 Agent 中提供工具路由、身份验证、串行调用、结果检查和人类可读的运维提示。 |
 | OAuth 保护 | 万得 Key 始终留在网关后面；客户端只向网关授权，不会拿到万得凭据。 |
-| 按额度自动轮换 | active primary generation 使用 `key-03 → key-02 → key-01`；持久化游标稳定使用当前槽位，只在获准的切换事件上前进。 |
+| 按额度自动轮换 | active primary generation 使用 `key-05 → key-04 → key-03 → key-02 → key-01`；持久化游标稳定使用当前槽位，只在获准的切换事件上前进。 |
 | 严格串行 | 私有 Key 池同时最多只有一个万得请求。增加更多 Key 提升的是故障切换容量，不是并行吞吐。 |
 | 失败即停止 | 工具缺失、证券身份不明确、市场不受支持或请求失败时停止，不用猜测值、网页数据或泛化分析冒充万得结果。 |
 | 可复现交付 | 测试、固定 11 文件的确定性 Skill 包、clean-room 校验和精确 Secret 扫描共同保护发布流程。 |
@@ -60,12 +60,12 @@ ChatGPT Work / Grok Web / 本地 Agent
 
 ## API Key 是怎么轮换的
 
-稳定 catalog 当前包含 `key-01`、`key-02` 与 `key-03`。active primary layout 的顺序是 `key-03 → key-02 → key-01`，其 KeyPool 持久化保存表示当前槽位的游标。原来的 `key-01 → key-02` pool 仍作为 legacy generation 保留，用于 rollback 兼容和 OAuth replay，不承接新的业务调用。
+稳定 catalog 包含 `key-01` 至 `key-05`。active primary layout `ring-primary-v2` 的顺序是 `key-05 → key-04 → key-03 → key-02 → key-01`，其 KeyPool 持久化保存表示当前槽位的游标。原来的 `key-01 → key-02` pool 仍作为 legacy generation 保留，用于 rollback 兼容和 OAuth replay，不承接新的业务调用。
 
 本仓库的 primary-layout revision 尚待合并；当前已部署的 Cloudflare production 仍是 legacy 两槽 generation，只有在单独批准 cutover 后才会切换。本说明不把该 cutover 写成已完成。
 
-1. 新 primary pool 从 `key-03` 开始；普通成功不会移动游标，因此请求不会在 Key 之间交替。
-2. 只有精确的日额度、余额、认证或人工停用事件才会让游标移到下一槽位：`key-03 → key-02 → key-01 → key-03`。余额、认证和人工停用状态在显式恢复前保持不可用。
+1. 新 primary v2 pool 从 `key-05` 开始；普通成功不会移动游标，因此请求不会在 Key 之间交替。
+2. 只有精确的日额度、余额、认证或人工停用事件才会让游标移到下一槽位：`key-05 → key-04 → key-03 → key-02 → key-01 → key-05`。余额、认证和人工停用状态在显式恢复前保持不可用。
 3. 同一次逻辑调用最多获取每个可用槽位一次；一轮尝试完毕后有界停止。下一次独立调用会从持久化游标开始新的一轮有界探测。
 4. 可信的未来 `reset_at` 会让日额度耗尽槽位在到期前保持不可用；如果上游没有给出可信 reset，该槽位允许在以后绕回时重新探测，不需要猜刷新时间或人工恢复。
 5. QPS cooldown、并发错误、超时、网络故障、响应过大、上游 5xx 和未知错误都不会移动游标，也不会连续烧掉 Key 池。
@@ -73,7 +73,7 @@ ChatGPT Work / Grok Web / 本地 Agent
 
 这是由明确事件驱动的环形 failover，不是逐请求 round-robin 负载均衡，也不能用于规避万得的账户、合同或服务限制。只能把你依法有权共同使用的 Key 放进同一个池。
 
-`gateway/src/key-pool/slots.ts` 是唯一的非敏感 catalog、layout 与 generation 声明。slot identity 与 binding 保持稳定；priority 由 layout 派生，并非 identity。未来普通扩容应将 `key-04`、`key-05` 依次追加到 catalog，**并追加到新的 strict-prefix layout 尾部**，不会自动变成 primary。替换 binding 只需更新 binding 并 restore slot；重排、删除、改名或中间插入必须创建新的 generation 并蓝绿切换。当前发行版不会自动发现未声明的 Secret。单纯扩大 KeyPool 不会改变 MCP 地址、31 工具清单、OAuth 流程、管理 URL 形式或 Skill 包。
+`gateway/src/key-pool/slots.ts` 是唯一的非敏感 catalog、layout 与 generation 声明。slot identity 与 binding 保持稳定；priority 是由持久化 layout 派生的运行时 topology，不是 identity 或全局编号排序。未来普通扩容只追加 catalog binding，再把获批的新 block 插入**实际持久化 cursor 之前**并原子成为新 cursor；旧 effective ring 顺序完整保留。替换 binding 只需更新原 binding 并 restore 原 slot；重排、删除、改名或非 cursor-relative successor block 必须创建新的 generation 并蓝绿切换。当前发行版不会自动发现未声明的 Secret。单纯扩大 KeyPool 不会改变 MCP 地址、31 工具清单、OAuth 流程、管理 URL 形式或 Skill 包。
 
 普通未来追加严格采用两阶段：先发布 **expand candidate**，让代码认识新 catalog、Secret binding 与 candidate layout，但 active layout 不变；再发布 **activate candidate**，切换到该 prefix-compatible layout。激活后只能回滚到已认识该 layout 的 expand candidate 或更高版本。完整 runbook 见[运维说明](docs/operations.md)。
 
@@ -82,7 +82,7 @@ ChatGPT Work / Grok Web / 本地 Agent
 你需要准备：
 
 - 可以使用对应 MCP 服务的万得 AIFin 账户或数据权限。
-- 三枚万得 API Key，对应当前仓库 active primary layout；绝对不能把它们提交进仓库。
+- 五枚万得 API Key，对应当前仓库 active primary layout；绝对不能把它们提交进仓库。
 - 一个自己的 Cloudflare 账户，并启用 Workers、KV、Durable Objects、Cron Triggers，以及经过你确认的 Access/OIDC 应用。
 - Git、npm 和 Node.js `>=24.13.1`。
 - 一个支持 MCP 的 Agent 或客户端，用来连接部署后的服务。
@@ -125,6 +125,8 @@ npm ci
 WIND_API_KEY_01=替换为第一枚Key
 WIND_API_KEY_02=替换为第二枚Key
 WIND_API_KEY_03=替换为第三枚Key
+WIND_API_KEY_04=替换为第四枚Key
+WIND_API_KEY_05=替换为第五枚Key
 ```
 
 把文件权限限制为只有你自己可以读取。不要把真实值粘贴到源码、Markdown、聊天、截图、命令参数或部署 JSON 中。
@@ -222,7 +224,7 @@ Skill 包在固定的 `iwind-aifin-connector/` 根目录下只包含 `SKILL.md`�
 
 ## 当前验证状态
 
-仓库具备自动化的 unit、integration、MCP/OAuth、Key 轮换、严格串行、打包、Secret 扫描和 dry-run build 测试。历史 v0.4 legacy 两槽 production 证据已在 `key-01 → key-02` 上验证 31 个唯一只读工具和代表性串行查询；这不是 v0.5 `key-03 → key-02 → key-01` primary layout 已完成 cutover 的证据。该 primary layout 仍等待单独批准的 Task 5 cutover。
+仓库具备自动化的 unit、integration、五槽 cursor-relative 轮换、严格串行、打包、Secret 扫描和 dry-run build 测试。历史 production 证据不是 v0.6 `ring-primary-v2` 已完成部署的证据；Cloudflare rollout 仍需要单独批准。
 
 ChatGPT Work 的自定义 Plugin 注册、OAuth、工具发现和代表性查询已经验证；最终 Skill 上传、Skill 自动触发和 scheduled task 仍属于账户级验收。Grok Web adapter 已提供，但尚未在真实 Grok 账户中验证。最新边界以[验收清单](docs/acceptance-checklist.md)为准。
 

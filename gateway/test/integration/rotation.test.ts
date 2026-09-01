@@ -23,6 +23,8 @@ const ADMIN_TOKEN = "task-10-independent-admin";
 const KEY_01 = "task-10-key-one";
 const KEY_02 = "task-10-key-two";
 const KEY_03 = "task-10-key-three";
+const KEY_04 = "task-10-key-four";
+const KEY_05 = "task-10-key-five";
 const REQUEST = {
   requestId: "task-10-rotation",
   toolName: "get_stock_price_indicators",
@@ -39,8 +41,8 @@ afterEach(async () => {
 });
 
 describe("local KeyPool integration", () => {
-  it("rotates consecutive canonical daily outcomes as key-03 to key-02 to key-01 to key-03", async () => {
-    await setNextOutcome("key-03", "daily_quota");
+  it("rotates canonical quota outcomes as key-05 to key-04 to key-03 to key-02 to key-01 to key-05", async () => {
+    await setNextOutcome("key-05", "daily_quota");
     const caller = trackedCaller([SUCCESS]);
 
     const rotated = await invokeWindTool(REQUEST, dependencies(caller));
@@ -51,11 +53,11 @@ describe("local KeyPool integration", () => {
       initialCategory: "daily_quota",
       finalStatus: "succeeded",
     });
-    expect(caller.slots).toEqual(["key-02"]);
+    expect(caller.slots).toEqual(["key-04"]);
     expect(caller.maxInFlight).toBe(1);
-    expect(await currentSlotId()).toBe("key-02");
+    expect(await currentSlotId()).toBe("key-04");
 
-    await setNextOutcome("key-02", "daily_quota");
+    await setNextOutcome("key-04", "daily_quota");
     const wrappedCaller = trackedCaller([SUCCESS]);
     const wrapped = await invokeWindTool(
       { ...REQUEST, requestId: "task-10-wrapped" },
@@ -68,28 +70,32 @@ describe("local KeyPool integration", () => {
       initialCategory: "daily_quota",
       finalStatus: "succeeded",
     });
-    expect(wrappedCaller.slots).toEqual(["key-01"]);
+    expect(wrappedCaller.slots).toEqual(["key-03"]);
     expect(wrappedCaller.maxInFlight).toBe(1);
-    expect(await currentSlotId()).toBe("key-01");
-
-    await setNextOutcome("key-01", "daily_quota");
-    const fullWrapCaller = trackedCaller([SUCCESS]);
-    const fullWrap = await invokeWindTool(
-      { ...REQUEST, requestId: "task-10-full-wrap" },
-      dependencies(fullWrapCaller),
-    );
-    expect(fullWrap.toolResult).toBe(SUCCESS);
-    expect(fullWrap.notice).toMatchObject({
-      code: "WIND_KEY_ROTATED",
-      initialCategory: "daily_quota",
-      finalStatus: "succeeded",
-    });
-    expect(fullWrapCaller.slots).toEqual(["key-03"]);
     expect(await currentSlotId()).toBe("key-03");
+
+    for (const [slot, expectedSlot, expectedCursor] of [
+      ["key-03", "key-02", "key-02"],
+      ["key-02", "key-01", "key-01"],
+      ["key-01", "key-05", "key-05"],
+    ] as const) {
+      await setNextOutcome(slot, "daily_quota");
+      const nextCaller = trackedCaller([SUCCESS]);
+      const next = await invokeWindTool(
+        { ...REQUEST, requestId: `task-10-wrap-${slot}` },
+        dependencies(nextCaller),
+      );
+      expect(next.toolResult).toBe(SUCCESS);
+      expect(next.notice).toMatchObject({ code: "WIND_KEY_ROTATED", initialCategory: "daily_quota" });
+      expect(nextCaller.slots).toEqual([expectedSlot]);
+      expect(await currentSlotId()).toBe(expectedCursor);
+    }
   });
 
   it("tries each slot once per invocation, stops, then re-probes from the persisted cursor", async () => {
     const exhaustedCaller = trackedCaller([
+      structuredFailure("DAILY_LIMIT_ERROR"),
+      structuredFailure("DAILY_LIMIT_ERROR"),
       structuredFailure("DAILY_LIMIT_ERROR"),
       structuredFailure("DAILY_LIMIT_ERROR"),
       structuredFailure("DAILY_LIMIT_ERROR"),
@@ -106,9 +112,9 @@ describe("local KeyPool integration", () => {
       initialCategory: "daily_quota",
       finalStatus: "failed",
     });
-    expect(exhaustedCaller.slots).toEqual(["key-03", "key-02", "key-01"]);
+    expect(exhaustedCaller.slots).toEqual(["key-05", "key-04", "key-03", "key-02", "key-01"]);
     expect(exhaustedCaller.maxInFlight).toBe(1);
-    expect(await currentSlotId()).toBe("key-03");
+    expect(await currentSlotId()).toBe("key-05");
 
     const nextCaller = trackedCaller([SUCCESS]);
     const next = await invokeWindTool(
@@ -118,7 +124,7 @@ describe("local KeyPool integration", () => {
 
     expect(next.toolResult).toBe(SUCCESS);
     expect(next.notice).toBeNull();
-    expect(nextCaller.slots).toEqual(["key-03"]);
+    expect(nextCaller.slots).toEqual(["key-05"]);
     expect(nextCaller.maxInFlight).toBe(1);
   });
 
@@ -129,9 +135,9 @@ describe("local KeyPool integration", () => {
     ["upstream_5xx", new WindCallFailure({ status: 503 })],
     ["timeout", timeoutFailure()],
   ] as const)(
-    "retries a synthetic %s outcome at most once on key-03 and never selects another slot",
+    "retries a synthetic %s outcome at most once on key-05 and never selects another slot",
     async (category, terminalFailure) => {
-      await setNextOutcome("key-03", category);
+      await setNextOutcome("key-05", category);
       const caller = trackedCaller([terminalFailure]);
 
       const result = await invokeWindTool(
@@ -145,15 +151,15 @@ describe("local KeyPool integration", () => {
         initialCategory: category,
         finalStatus: "failed",
       });
-      expect(caller.slots).toEqual(["key-03"]);
+      expect(caller.slots).toEqual(["key-05"]);
       expect(caller.maxInFlight).toBe(1);
-      expect(await slotState("key-02")).toBe("active");
-      expect(await currentSlotId()).toBe("key-03");
+      expect(await slotState("key-04")).toBe("active");
+      expect(await currentSlotId()).toBe("key-05");
     },
   );
 
   it("stops an unknown synthetic outcome without retry or next-slot failover", async () => {
-    await setNextOutcome("key-03", "unknown");
+    await setNextOutcome("key-05", "unknown");
     const caller = trackedCaller([]);
 
     const result = await invokeWindTool(
@@ -167,12 +173,12 @@ describe("local KeyPool integration", () => {
       initialCategory: "unknown",
     });
     expect(caller.slots).toEqual([]);
-    expect(await slotState("key-02")).toBe("active");
-    expect(await currentSlotId()).toBe("key-03");
+    expect(await slotState("key-04")).toBe("active");
+    expect(await currentSlotId()).toBe("key-05");
   });
 
   it("stops an oversized-response outcome without moving the cursor", async () => {
-    await setNextOutcome("key-03", "response_too_large");
+    await setNextOutcome("key-05", "response_too_large");
     const caller = trackedCaller([]);
 
     const result = await invokeWindTool(
@@ -187,8 +193,8 @@ describe("local KeyPool integration", () => {
       finalStatus: "failed",
     });
     expect(caller.slots).toEqual([]);
-    expect(await slotState("key-02")).toBe("active");
-    expect(await currentSlotId()).toBe("key-03");
+    expect(await slotState("key-04")).toBe("active");
+    expect(await currentSlotId()).toBe("key-05");
   });
 
   it("serializes overlapping logical requests through the one real coordination atom", async () => {
@@ -207,7 +213,7 @@ describe("local KeyPool integration", () => {
 
     expect(results.every(({ toolResult }) => toolResult === SUCCESS)).toBe(true);
     expect(caller.maxInFlight).toBe(1);
-    expect(caller.slots).toEqual(["key-03", "key-03"]);
+    expect(caller.slots).toEqual(["key-05", "key-05"]);
   });
 
   it("keeps every local admin route exact and bounds malformed request bodies", async () => {
@@ -267,19 +273,19 @@ describe("local KeyPool integration", () => {
   it("uses an activated successor layout as authority after rollback to its expand candidate", async () => {
     const stub = activeKeyPool();
     await stub.getStatus();
-    const futureLayoutId = "ring-primary-future-v2";
-    const futureSlotId = "key-04";
+    const futureLayoutId = "ring-primary-future-v3";
+    const futureSlotId = "key-06";
     const catalog = KEY_SLOT_CATALOG as unknown as KeySlotCatalogEntry[];
     const layouts = KEY_POOL_LAYOUTS as unknown as Record<string, KeyPoolLayoutDefinition>;
     const futureLayout = {
       layoutId: futureLayoutId,
       generationId: KEY_POOL_GENERATIONS.primary.generationId,
       predecessorLayoutId: KEY_POOL_LAYOUT_ID,
-      slotIds: [futureSlotId, "key-03", "key-02", "key-01"],
-      initialRingOrder: [futureSlotId, "key-03", "key-02", "key-01"],
+      slotIds: [futureSlotId, "key-05", "key-04", "key-03", "key-02", "key-01"],
+      initialRingOrder: [futureSlotId, "key-05", "key-04", "key-03", "key-02", "key-01"],
       insertedBeforeCursorSlotIds: [futureSlotId],
     } as unknown as KeyPoolLayoutDefinition;
-    catalog.push({ slotId: futureSlotId, secretBinding: "WIND_API_KEY_04" });
+    catalog.push({ slotId: futureSlotId, secretBinding: "WIND_API_KEY_06" });
     layouts[futureLayoutId] = futureLayout;
 
     try {
@@ -403,6 +409,8 @@ function dependencies(caller: WindToolCaller) {
       WIND_API_KEY_01: KEY_01,
       WIND_API_KEY_02: KEY_02,
       WIND_API_KEY_03: KEY_03,
+      WIND_API_KEY_04: KEY_04,
+      WIND_API_KEY_05: KEY_05,
       KEY_POOL_LAYOUT_ID,
       DEPLOYMENT_STAGE: "staging",
     },
@@ -414,7 +422,7 @@ function dependencies(caller: WindToolCaller) {
 }
 
 async function setNextOutcome(
-  slotId: "key-01" | "key-02" | "key-03",
+  slotId: "key-01" | "key-02" | "key-03" | "key-04" | "key-05",
   category: WindFailureCategory,
 ): Promise<void> {
   const response = await admin("/admin/test-controls/next-outcome", {
@@ -466,7 +474,7 @@ async function versionedSnapshot(stub: ReturnType<typeof activeKeyPool>) {
   }));
 }
 
-async function slotState(slotId: "key-01" | "key-02" | "key-03"): Promise<string | undefined> {
+async function slotState(slotId: "key-01" | "key-02" | "key-03" | "key-04" | "key-05"): Promise<string | undefined> {
   const status = await activeKeyPool().getStatus();
   return status.slots.find((slot) => slot.slotId === slotId)?.state;
 }
@@ -501,7 +509,11 @@ function trackedCaller(
             ? "key-02"
             : apiKey === KEY_03
               ? "key-03"
-              : "unknown",
+              : apiKey === KEY_04
+                ? "key-04"
+                : apiKey === KEY_05
+                  ? "key-05"
+                  : "unknown",
       );
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);

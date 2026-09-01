@@ -65,10 +65,10 @@ The checked-in `gateway/wrangler.jsonc` is the source configuration and retains 
      --worker-name iwind-connector-production \
      --public-origin https://iwind.example.invalid \
      --deployment-stage production \
-     --key-pool-layout-id ring-primary-v1
+     --key-pool-layout-id ring-primary-v2
    ```
 
-   Replace every example value. Production origins must be HTTPS. The renderer rejects the all-zero KV sentinel, unknown stages or layouts, extra flags, and source-config writeback, and writes only ignored `dist/wrangler.deploy.jsonc`. The source configuration currently requires 13 Secret binding names, including `WIND_API_KEY_01`, `WIND_API_KEY_02`, and `WIND_API_KEY_03`; list them from the source rather than copying values into this document.
+   Replace every example value. Production origins must be HTTPS. The renderer accepts both `ring-primary-v1` expand and `ring-primary-v2` activate candidates from this commit, rejects invalid inputs, and writes only ignored `dist/wrangler.deploy.jsonc`. The source configuration requires 15 Secret binding names, including `WIND_API_KEY_01` through `WIND_API_KEY_05`; list them from the source rather than copying values into this document.
 3. Treat `gateway/wrangler.jsonc` → `secrets.required` as the single source of truth for required bindings. List the current names without values:
 
    ```bash

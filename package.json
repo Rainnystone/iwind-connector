@@ -18,6 +18,7 @@
     "test:mcp:smoke": "vitest run gateway/test/integration/oauth-mcp.test.ts --project workers",
     "build": "wrangler deploy --dry-run --config gateway/wrangler.jsonc",
     "contract:probe": "tsx gateway/scripts/probe-wind.ts",
+    "credential:validate": "tsx gateway/scripts/validate-wind-credential.ts",
     "contract:verify": "tsx gateway/scripts/verify-manifest.ts",
     "skill:verify": "vitest run skill/test",
     "skill:verify:package": "tsx scripts/verify-skill-package.ts --archive dist/iwind-aifin-connector-skill.zip",

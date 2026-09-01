@@ -7,7 +7,7 @@
 - Slot states and transitions: `gateway/src/key-pool/key-pool.ts`.
 - Upstream schema snapshot: `gateway/src/contracts/tool-manifest.json` plus its `.sha256`, verified by `npm run contract:verify`.
 
-The active primary generation has the stable catalog `key-01`, `key-02`, `key-03` and the active layout `key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is derived from a layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout. The persisted manifest is the runtime authority for an activated versioned object: admin, test-control, lease, cursor, and acquisition resolve its persisted layout rather than treating the environment's active-layout ID as a replacement for stored state. Generation IDs and Durable Object names are each unique.
+The active primary generation has the stable catalog `key-01` through `key-05` and active `ring-primary-v2` layout `key-05 → key-04 → key-03 → key-02 → key-01`. Slot identity and binding are stable; priority is runtime topology derived from the persisted layout. The old `key-01 → key-02` legacy object remains schema v2 for OAuth replay and rollback compatibility. It has no `pool_manifest`; the primary object uses schema v3 with a manifest that records its generation and layout. The persisted manifest is the runtime authority for admin, test-control, lease, cursor, and acquisition.
 
 This code is not deployed to Cloudflare production yet. Production remains on the old two-slot generation until the feature PR is merged and a separately approved Task 5 cutover is performed. Do not treat a local primary-layout test as a completed deployment.
 
@@ -18,8 +18,8 @@ Use an approved admin HTTP client that injects `ADMIN_TOKEN` from protected inpu
 | Operation | Method and path | Exact JSON body | Success |
 | --- | --- | --- | --- |
 | Inspect pool | `GET {PUBLIC_ORIGIN}/admin/key-pool` | none | `200` JSON status including anonymous `currentSlotId` |
-| Disable slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-03/disable`, `key-02`, or `key-01` | `{}` | `204` |
-| Restore slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/key-03/restore`, `key-02`, or `key-01` | `{}` | `204` |
+| Disable slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/{key-01…key-05}/disable` | `{}` | `204` |
+| Restore slot | `POST {PUBLIC_ORIGIN}/admin/key-pool/slots/{key-01…key-05}/restore` | `{}` | `204` |
 
 For POST, the Content-Type must be exactly `application/json`. Record only the returned state, timestamps, call count, and request identifier; never record headers or Secret values.
 
@@ -28,7 +28,7 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
 1. Inspect the pool and identify the binding/slot pair from the mapping above.
 2. Disable that slot through the admin request contract. Confirm its state is `disabled_manual` before changing the binding.
 3. Update the matching entry in both owner-only private files, `../.secrets/iwind.keys.env` and the complete `../.secrets/iwind.cloudflare.env`, with a Secret-aware editor. Do not copy its value into Markdown, chat, a command argument, or a log.
-4. For an existing Worker, render the approved deploy config, create one complete Secret-file candidate, perform names-only inspection, then explicitly deploy the exact candidate at 100%:
+4. For an existing Worker, render the approved deploy config, create one complete Secret-file candidate, perform names-only inspection, then explicitly deploy the exact candidate at 100%.
 
    ```bash
    npx --no-install wrangler versions upload \
@@ -38,28 +38,32 @@ For POST, the Content-Type must be exactly `application/json`. Record only the r
      --config dist/wrangler.deploy.jsonc
    ```
 
-   Before the deploy command, run the exact `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` names-only filter printed in [installation](installation.md), not a raw JSON dump; it may emit only binding names, `KEY_POOL_LAYOUT_ID`, and `DEPLOYMENT_STAGE`. Never percentage-split or use `wrangler secret put`: it creates and immediately deploys a version. Use the matching declared binding when replacing another existing slot: `WIND_API_KEY_02` for `key-02`, or `WIND_API_KEY_03` for `key-03`.
+   Before the deploy command, run the exact `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` names-only filter printed in [installation](installation.md), not a raw JSON dump; it may emit only binding names, `KEY_POOL_LAYOUT_ID`, and `DEPLOYMENT_STAGE`. Never percentage-split or use `wrangler secret put`. Use the matching declared binding for the same slot.
 5. Run `npm run secret:scan -- --secrets-file '../.secrets/iwind.keys.env'`. A pass proves the current exact values do not occur in delivery source or the packaged Skill.
-6. Restore the slot, then inspect status again. Restore changes state only; it does not validate the replacement. Complete the change with one approved representative read-only call and confirm the slot returns to normal operation without a failure notice.
+6. Restore changes state only; it does not validate a replacement. Before restore, run the one-call, anonymous validator for that slot from the private env file; it emits only slot, pass/fail, and response shape. Then inspect status again.
+
+```bash
+node --env-file=../.secrets/iwind.keys.env node_modules/tsx/dist/cli.mjs gateway/scripts/validate-wind-credential.ts --slot key-04
+```
 
 ## Choose the correct maintenance action
 
 | Need | Safe change | Required result |
 | --- | --- | --- |
 | Replace an existing Key | Update the same private/Cloudflare binding and restore the same slot. | No catalog, layout, generation, client, Skill, MCP URL, or OAuth change. |
-| Add ordinary capacity | Append a new catalog/binding identity at the tail and create a new strict-prefix layout in the **same** generation. | Use the two-stage expand/activate rollout below; the new slot is the layout tail, not primary. |
-| Change priority, delete, rename, or insert in the middle | Create a new generation and a new Durable Object name. | Use a dedicated blue-green plan; do not disguise it as ordinary expansion. |
+| Add ordinary capacity | Append only the new catalog/binding identities, then define a successor block before the actual persisted cursor in the same generation. | The new block becomes cursor; the old effective ring order remains intact. Use expand then activate. |
+| Reorder, delete, rename, or replace topology | Create a new generation and a new Durable Object name. | Use a dedicated blue-green plan; do not disguise it as ordinary expansion. |
 
-The catalog is append-only. A same-generation prefix append preserves every existing slot's state, call count, cursor, and live lease. A corrupted manifest, generation mismatch, reorder, deletion, rename, middle insertion, duplicate, or catalog-external slot fails closed. Never repair SQLite by hand or retry around that rejection.
+The catalog is append-only. A same-generation cursor-relative successor preserves every existing slot's state, call count, cursor, and live lease, inserting only the approved new block immediately before the persisted cursor. A corrupted manifest, generation mismatch, reorder, deletion, rename, duplicate, or catalog-external slot fails closed. Never repair SQLite by hand.
 
 ## Future ordinary expansion: expand, then activate
 
 This is an engineering and approved deployment action, not a live admin action.
 
-1. Obtain human approval for the new tail slot, its Secret binding, and the rollout. Append the catalog identity/binding, define a candidate layout whose existing ordered slots are an exact prefix, and update the required binding names, tests, and documentation. `key-04` and then `key-05` are ordinary examples; neither becomes primary automatically.
+1. Obtain human approval for the new slot block, bindings, and rollout. Append catalog identities/bindings, define the successor with its block immediately before the actual persisted cursor, and update required names, tests, and documentation. Do not derive topology from descending slot numbers or tail append.
 2. Build and verify the **expand candidate**. It must recognize the expanded catalog, candidate layout, and Secret binding, while `KEY_POOL_LAYOUT_ID` still selects the old active layout. Upload it through the complete-file candidate path only; do not activate the candidate layout yet.
 3. Verify the expand candidate against its unchanged active layout, including Secret-free scans and the relevant schema/layout tests. Keep this candidate available: once activation succeeds, it is the minimum safe rollback target because it already recognizes the new layout and can read the persisted successor layout.
-4. Build and verify the **activate candidate** with `KEY_POOL_LAYOUT_ID` changed to the approved strict-prefix layout. Activate it only after a separate cutover approval and validate its persisted manifest, slot states, cursor, lease behavior, unchanged MCP URL, 31 tools, OAuth, notices, and strict serialization.
+4. Build and verify the **activate candidate** with `KEY_POOL_LAYOUT_ID` changed to the approved successor layout. Activate it only after a separate cutover approval and validate the inserted block, atomic cursor handoff, persisted manifest, unchanged MCP URL, 31 tools, OAuth, notices, and strict serialization.
 5. After activation, do not roll back to a version that knows only the old layout. Roll back only to the expand candidate or a newer compatible revision; the expand candidate can read the persisted successor layout while its environment active ID remains old. Unknown or non-prefix persisted layouts fail closed. Record identifiers in the private deployment record, never in this public runbook.
 
 ## Disable or restore a Key

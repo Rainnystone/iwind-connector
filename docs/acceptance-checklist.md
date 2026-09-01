@@ -63,20 +63,20 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [ ] Confirm both declared slot states, stable notice wire shapes, maximum upstream in-flight of one, and unchanged MCP URL, 31 tools, OAuth, and Skill behavior.
 - [ ] Obtain a separate production cutover approval only after staging evidence is accepted.
 
-## v0.5 N-Key primary-layout local gate
+## v0.6 Cursor-relative five-slot local gate
 
-- [x] Confirm the stable catalog is `key-01`, `key-02`, `key-03` while the active primary layout is `key-03 → key-02 → key-01`; priority is layout-derived rather than slot identity.
+- [x] Confirm the stable catalog is `key-01` through `key-05` while active `ring-primary-v2` is `key-05 → key-04 → key-03 → key-02 → key-01`; priority is persisted-layout-derived rather than slot identity.
 - [x] Confirm the old legacy pool remains schema v2 with no `pool_manifest`, while the new primary generation initializes schema v3 with a generation/layout manifest.
-- [x] Confirm ordinary same-generation expansion accepts only a strict prefix append and preserves existing slot state, counters, cursor, and lease.
+- [x] Confirm a same-generation successor inserts its approved block immediately before the actual persisted cursor, atomically becomes cursor, and preserves old ring order, state, counters, and lease.
 - [x] Confirm corrupt metadata, generation mismatch, reorder, deletion, rename, middle insertion, duplicate slots, and catalog-external slots fail closed without mutating persisted state.
 - [x] Confirm active business routing uses the primary generation while OAuth replay remains on the legacy object.
 - [x] Confirm the active ring remains quota-event failover—not per-request round-robin—with at most one upstream request active and no cursor advance for non-rotation errors.
 
-## v0.5 future expand and activate rollout
+## v0.6 expand and activate rollout
 
 - [ ] Obtain separate human approval before adding a future Key binding, uploading a candidate, changing a Cloudflare version, or changing production state.
-- [ ] Deploy and test an **expand candidate** that recognizes the new tail catalog entry, Secret binding, and candidate layout while its active layout remains unchanged.
-- [ ] Deploy and test an **activate candidate** that switches only to the approved strict-prefix layout; retain the expand candidate as the minimum safe rollback target after activation.
+- [ ] Deploy and test the v1 **expand candidate** that recognizes all five bindings and `ring-primary-v2` while active layout remains `ring-primary-v1`.
+- [ ] Deploy and test the v2 **activate candidate** that switches to `ring-primary-v2`; retain the expand candidate as the minimum safe rollback target.
 - [ ] For an existing Worker, use the complete owner-only Secret file to `versions upload --config dist/wrangler.deploy.jsonc`, inspect the exact candidate with `versions view <candidate> --config dist/wrangler.deploy.jsonc --json` through the installation names-only filter, then deploy exact `candidate@100% --config dist/wrangler.deploy.jsonc`; do not percentage-split the KeyPool deployment.
 - [ ] For first creation only, use one complete `wrangler deploy --config dist/wrangler.deploy.jsonc --secrets-file` deployment; do not use per-binding `secret put` as a standard deployment step.
 - [ ] Confirm the persisted manifest is the activated versioned object's runtime authority: compatible expand rollback reads the persisted successor layout while its environment active ID remains old; admin, test-control, lease, cursor, and acquisition all follow persisted layout; unknown/non-prefix layouts fail closed.

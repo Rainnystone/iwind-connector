@@ -23,6 +23,8 @@ const NOW = 1_700_000_000_000;
 const SECRET_01 = "unit-secret-one";
 const SECRET_02 = "unit-secret-two";
 const SECRET_03 = "unit-secret-three";
+const SECRET_04 = "unit-secret-four";
+const SECRET_05 = "unit-secret-five";
 const REQUEST: InvocationRequest = {
   requestId: "request-01",
   toolName: "get_stock_quote",
@@ -86,6 +88,8 @@ describe("Wind invocation state machine", () => {
       WIND_API_KEY_01: SECRET_01,
       WIND_API_KEY_02: SECRET_02,
       WIND_API_KEY_03: SECRET_03,
+      WIND_API_KEY_04: SECRET_04,
+      WIND_API_KEY_05: SECRET_05,
       KEY_POOL_LAYOUT_ID: "ring-primary-v1",
     } as never;
 

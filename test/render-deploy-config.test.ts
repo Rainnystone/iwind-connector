@@ -26,6 +26,8 @@ const VALID_ARGS = [
   "ring-primary-v1",
 ] as const;
 
+const ACTIVATE_ARGS = VALID_ARGS.with(9, "ring-primary-v2");
+
 function runRender(args: ReadonlyArray<string>): Readonly<{ status: number | null; stdout: string; stderr: string }> {
   const result = spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], { cwd: REPO_ROOT, encoding: "utf8" });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -80,6 +82,31 @@ describe("deploy config renderer", () => {
       KEY_SLOT_CATALOG.map(({ secretBinding }) => secretBinding),
     );
     await expect(readFile(SOURCE, "utf8")).resolves.toBe(sourceBefore);
+  });
+
+  it("renders both the v1 expand and v2 activate candidates with all fifteen Secret names", async () => {
+    for (const [candidate, args] of [
+      ["expand", VALID_ARGS],
+      ["activate", ACTIVATE_ARGS],
+    ] as const) {
+      const result = runRender(args);
+      expect(result).toMatchObject({ status: 0, stderr: "" });
+      const rendered = JSON.parse(await readFile(OUTPUT, "utf8")) as {
+        vars: { KEY_POOL_LAYOUT_ID: string };
+        secrets: { required: readonly string[] };
+      };
+      expect(rendered.vars.KEY_POOL_LAYOUT_ID).toBe(
+        candidate === "expand" ? "ring-primary-v1" : "ring-primary-v2",
+      );
+      expect(rendered.secrets.required).toHaveLength(15);
+      expect(rendered.secrets.required.filter((name) => name.startsWith("WIND_API_KEY_"))).toEqual([
+        "WIND_API_KEY_01",
+        "WIND_API_KEY_02",
+        "WIND_API_KEY_03",
+        "WIND_API_KEY_04",
+        "WIND_API_KEY_05",
+      ]);
+    }
   });
 
   it.each([

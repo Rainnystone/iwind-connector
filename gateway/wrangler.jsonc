@@ -7,13 +7,15 @@
   "vars": {
     "PUBLIC_ORIGIN": "http://localhost:8787",
     "DEPLOYMENT_STAGE": "local",
-    "KEY_POOL_LAYOUT_ID": "ring-primary-v1"
+    "KEY_POOL_LAYOUT_ID": "ring-primary-v2"
   },
   "secrets": {
     "required": [
       "WIND_API_KEY_01",
       "WIND_API_KEY_02",
       "WIND_API_KEY_03",
+      "WIND_API_KEY_04",
+      "WIND_API_KEY_05",
       "ADMIN_TOKEN",
       "COOKIE_ENCRYPTION_KEY",
       "ACCESS_CLIENT_ID",

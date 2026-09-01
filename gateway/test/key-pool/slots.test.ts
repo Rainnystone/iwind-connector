@@ -21,13 +21,49 @@ describe("key slot manifest", () => {
       { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
       { slotId: "key-02", secretBinding: "WIND_API_KEY_02" },
       { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
+      { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
+      { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
     ]);
     expect(getKeySlotDefinitions(KEY_POOL_LAYOUT_ID)).toEqual([
-      { slotId: "key-03", priority: 1, secretBinding: "WIND_API_KEY_03" },
-      { slotId: "key-02", priority: 2, secretBinding: "WIND_API_KEY_02" },
-      { slotId: "key-01", priority: 3, secretBinding: "WIND_API_KEY_01" },
+      { slotId: "key-05", priority: 1, secretBinding: "WIND_API_KEY_05" },
+      { slotId: "key-04", priority: 2, secretBinding: "WIND_API_KEY_04" },
+      { slotId: "key-03", priority: 3, secretBinding: "WIND_API_KEY_03" },
+      { slotId: "key-02", priority: 4, secretBinding: "WIND_API_KEY_02" },
+      { slotId: "key-01", priority: 5, secretBinding: "WIND_API_KEY_01" },
     ]);
     expect(KEY_SLOT_DEFINITIONS).toEqual(getKeySlotDefinitions("ring-legacy-v1"));
+  });
+
+  it("declares the five stable slots and the cursor-relative primary v2 insertion", () => {
+    expect(KEY_SLOT_CATALOG).toEqual([
+      { slotId: "key-01", secretBinding: "WIND_API_KEY_01" },
+      { slotId: "key-02", secretBinding: "WIND_API_KEY_02" },
+      { slotId: "key-03", secretBinding: "WIND_API_KEY_03" },
+      { slotId: "key-04", secretBinding: "WIND_API_KEY_04" },
+      { slotId: "key-05", secretBinding: "WIND_API_KEY_05" },
+    ]);
+    expect(getKeyPoolConfiguration("ring-primary-v1").layout).toMatchObject({
+      predecessorLayoutId: null,
+      slotIds: ["key-03", "key-02", "key-01"],
+      initialRingOrder: ["key-03", "key-02", "key-01"],
+      insertedBeforeCursorSlotIds: [],
+    });
+    expect(getKeyPoolConfiguration("ring-primary-v2").layout).toEqual({
+      layoutId: "ring-primary-v2",
+      generationId: "primary-v2",
+      predecessorLayoutId: "ring-primary-v1",
+      slotIds: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      initialRingOrder: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      insertedBeforeCursorSlotIds: ["key-05", "key-04"],
+    });
+    expect(KEY_POOL_LAYOUT_ID).toBe("ring-primary-v2");
+    expect(getKeySlotDefinitions(KEY_POOL_LAYOUT_ID).map(({ slotId }) => slotId)).toEqual([
+      "key-05",
+      "key-04",
+      "key-03",
+      "key-02",
+      "key-01",
+    ]);
   });
 
   it("rejects removal, reorder, duplicate slots, and duplicate bindings from catalog growth", () => {
@@ -57,12 +93,12 @@ describe("key slot manifest", () => {
   it("resolves declared layouts and generations while rejecting unknown layouts", () => {
     const configuration = getKeyPoolConfiguration(KEY_POOL_LAYOUT_ID);
     expect(configuration.layout).toMatchObject({
-      layoutId: "ring-primary-v1",
+      layoutId: "ring-primary-v2",
       generationId: "primary-v2",
-      predecessorLayoutId: null,
-      slotIds: ["key-03", "key-02", "key-01"],
-      initialRingOrder: ["key-03", "key-02", "key-01"],
-      insertedBeforeCursorSlotIds: [],
+      predecessorLayoutId: "ring-primary-v1",
+      slotIds: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      initialRingOrder: ["key-05", "key-04", "key-03", "key-02", "key-01"],
+      insertedBeforeCursorSlotIds: ["key-05", "key-04"],
     });
     expect(configuration.generation).toEqual({
       generationId: "primary-v2",
@@ -72,9 +108,9 @@ describe("key slot manifest", () => {
       expect(isSlotId(catalogEntry.slotId)).toBe(true);
       expect(getKeySlotDefinition(catalogEntry.slotId)).toBe(catalogEntry);
     }
-    expect(isSlotId("key-04")).toBe(false);
+    expect(isSlotId("key-04")).toBe(true);
     expect(isSlotId(1)).toBe(false);
-    expect(() => Reflect.apply(getKeySlotDefinition, undefined, ["key-04"])).toThrow(
+    expect(() => Reflect.apply(getKeySlotDefinition, undefined, ["key-06"])).toThrow(
       "UNKNOWN_SLOT",
     );
     expect(() => getKeyPoolConfiguration("ring-unknown-v1")).toThrow("INVALID_KEY_POOL_LAYOUT");

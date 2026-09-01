@@ -23,7 +23,7 @@ ChatGPT Work / Grok Web / local agent
                Cloudflare Worker gateway
                ├── OAuth and access control
                ├── 31-tool read-only manifest
-               ├── serial ordered key pool (active primary ring: three slots)
+               ├── serial ordered key pool (active primary ring: five slots)
                └── sanitized operations notices
                          │
                          ▼
@@ -40,7 +40,7 @@ The Cloudflare Plugin described below is a setup and maintenance assistant. It c
 | 31 read-only tools | Stock, fund, index, economic, announcement/news, and supported financial-analysis queries. |
 | Runtime-neutral Skill | The same Skill zip provides tool routing, identity validation, serial execution, result checks, and human-readable notices across supported agents. |
 | OAuth protection | Wind keys stay behind the gateway. Clients authenticate to the gateway rather than receiving Wind credentials. |
-| Quota-aware key rotation | The active primary generation uses `key-03 → key-02 → key-01`. A persisted cursor keeps the active slot stable and advances only on approved failover events. |
+| Quota-aware key rotation | The active primary generation uses `key-05 → key-04 → key-03 → key-02 → key-01`. A persisted cursor keeps the active slot stable and advances only on approved failover events. |
 | Strict serialization | At most one Wind request is active in the private key pool at a time. Additional keys increase failover capacity, not parallel throughput. |
 | Fail-closed behavior | Missing tools, ambiguous security identities, unsupported markets, and failed requests stop instead of being replaced with guessed or web-sourced data. |
 | Reproducible delivery | Tests, a deterministic 11-file Skill archive, clean-room verification, and exact-value Secret scanning protect the release process. |
@@ -60,12 +60,12 @@ The gateway does not expose trading or write actions.
 
 ## How key rotation works
 
-The stable catalog currently contains `key-01`, `key-02`, and `key-03`. The active primary layout orders them `key-03 → key-02 → key-01`; its KeyPool persists a cursor that identifies the current slot. The prior `key-01 → key-02` pool remains a legacy generation for rollback compatibility and OAuth replay, not for new business calls.
+The stable catalog contains `key-01` through `key-05`. The active primary layout `ring-primary-v2` orders a new pool `key-05 → key-04 → key-03 → key-02 → key-01`; its KeyPool persists a cursor that identifies the current slot. The prior `key-01 → key-02` pool remains a legacy generation for rollback compatibility and OAuth replay, not for new business calls.
 
 This repository's primary-layout revision is awaiting merge. The currently deployed Cloudflare production environment remains on the legacy two-slot generation until a separately approved cutover; this documentation does not claim that cutover is complete.
 
-1. A new primary pool starts on `key-03`; ordinary success keeps the cursor there, so requests do not alternate between keys.
-2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-03 → key-02 → key-01 → key-03`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
+1. A new primary v2 pool starts on `key-05`; ordinary success keeps the cursor there, so requests do not alternate between keys.
+2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-05 → key-04 → key-03 → key-02 → key-01 → key-05`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
 3. Each logical invocation can acquire every eligible slot at most once. If that bounded pass is exhausted, the call stops; a later independent invocation starts a new bounded pass from the persisted cursor.
 4. A trusted future `reset_at` keeps a daily-exhausted slot unavailable until its reset. When no trusted reset is supplied, the slot remains eligible for a later wrap-around probe instead of requiring a guessed reset time or manual restore.
 5. QPS cooldown, concurrency errors, timeouts, network failures, oversized responses, upstream 5xx responses, and unknown errors do not move the cursor or burn through the pool.
@@ -73,7 +73,7 @@ This repository's primary-layout revision is awaiting merge. The currently deplo
 
 This is event-driven ring failover, not per-request round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.
 
-`gateway/src/key-pool/slots.ts` is the single non-Secret catalog, layout, and generation declaration. Slot identity and binding are stable; priority is derived from a layout and is therefore not an identity field. Ordinary future capacity additions append `key-04`, then `key-05`, to the catalog **and to the tail of a new strict-prefix layout**. They do not become primary automatically. Replacing a binding only requires a binding update and slot restore. Reordering, deleting, renaming, or inserting in the middle requires a new generation and a blue-green cutover. The current release does **not** discover undeclared Secrets automatically. The MCP endpoint, 31-tool manifest, OAuth flow, administration URL shape, and Skill package do not change merely because the pool grows.
+`gateway/src/key-pool/slots.ts` is the single non-Secret catalog, layout, and generation declaration. Slot identity and binding are stable; priority is runtime topology derived from the persisted layout, not identity or global number sorting. An ordinary future expansion appends only new catalog bindings, then defines an approved successor block that is inserted immediately before the **actual persisted cursor** and becomes the new cursor; it preserves the old effective ring order. Replacement updates the same binding and restores the same slot. Reorder, deletion, rename, or any layout that is not a cursor-relative successor block requires a new generation and blue-green cutover. The release never discovers undeclared Secrets automatically. The MCP endpoint, 31-tool manifest, OAuth flow, administration URL shape, and Skill package remain unchanged.
 
 An ordinary future append is deliberately two-stage: deploy an **expand candidate** that recognizes the new catalog entry, Secret binding, and candidate layout while keeping the active layout unchanged; then deploy an **activate candidate** that switches to that prefix-compatible layout. After activation, rollback may target only the expand candidate (or a newer revision) that recognizes the activated layout. See [operations](docs/operations.md) for the complete runbook.
 
@@ -82,7 +82,7 @@ An ordinary future append is deliberately two-stage: deploy an **expand candidat
 You need:
 
 - A Wind AIFin account or entitlement that can use the integrated MCP services.
-- Three Wind API keys for the repository's active primary layout. The keys must never be committed to this repository.
+- Five Wind API keys for the repository's active primary layout. The keys must never be committed to this repository.
 - A Cloudflare account with Workers, KV, Durable Objects, Cron Triggers, and an approved Access/OIDC application.
 - Git, npm, and Node.js `>=24.13.1`.
 - An MCP-capable agent or client for using the deployed service.
@@ -125,6 +125,8 @@ Create a private env file outside the repository. This project's local conventio
 WIND_API_KEY_01=replace-with-your-first-key
 WIND_API_KEY_02=replace-with-your-second-key
 WIND_API_KEY_03=replace-with-your-third-key
+WIND_API_KEY_04=replace-with-your-fourth-key
+WIND_API_KEY_05=replace-with-your-fifth-key
 ```
 
 Restrict the file to its owner. Do not paste real values into source files, Markdown, chat messages, screenshots, command arguments, or deployment JSON.
@@ -222,7 +224,7 @@ The Skill package contains only `SKILL.md`, `references/*.md`, and `evals/*.json
 
 ## Verification status
 
-The repository has automated unit, integration, MCP/OAuth, key-rotation, serialization, packaging, Secret-scan, and dry-run build coverage. Historical v0.4 legacy two-slot production evidence verified 31 unique read-only tools and representative serial queries on `key-01 → key-02`; it is not evidence that the v0.5 `key-03 → key-02 → key-01` primary layout has been cut over. That primary layout remains pending the separately approved Task 5 cutover.
+The repository has automated unit, integration, MCP/OAuth, five-slot cursor-relative rotation, serialization, packaging, Secret-scan, and dry-run build coverage. Historical production evidence must not be treated as evidence that this v0.6 `ring-primary-v2` layout has been deployed; Cloudflare rollout requires separate approval.
 
 ChatGPT Work custom-Plugin registration, OAuth, tool discovery, and a representative query have been verified. Final Skill upload, automatic Skill invocation, and scheduled-task behavior remain account-level acceptance steps. The Grok Web adapter is provided but has not yet been verified in a real Grok account. See the [acceptance checklist](docs/acceptance-checklist.md) for the current boundary.
 
