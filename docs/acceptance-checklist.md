@@ -85,14 +85,16 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [x] Run the local/fake 600-second total-budget contract with a fake clock and abort signal, without a live 600-second wait or Wind quota use.
 - [x] Confirm in Workers integration tests that timeout, upstream 5xx, and network failures retry at most once on the same slot, never select the second slot, and keep maximum Wind in-flight at one.
 
-## Production cutover
+## Production cutover — v0.4 legacy evidence
+
+The checked items in this section are historical evidence for the already deployed `key-01 → key-02` legacy generation and its 12-binding version only. They do not evidence deployment of the v0.5 `key-03 → key-02 → key-01` primary layout, which remains pending the separately approved Task 5 cutover.
 
 - [x] Re-render the deploy-only config with the same Worker, origin, KV, Durable Object, cron, and 12 required Secret bindings, changing only `DEPLOYMENT_STAGE` to `production`.
 - [x] Run a dry-run build and inspect the complete candidate before upload.
 - [x] Upload with the complete private secrets file without deploying, inspect the new version, then explicitly deploy that one version at 100%.
 - [x] Confirm the same public MCP URL remains in service and the staging test-control route returns 404.
 
-## Production security
+## Production security — v0.4 legacy evidence
 
 - [x] Confirm unauthenticated MCP returns 401, OAuth metadata remains valid, and admin requests without independent authorization are rejected.
 - [x] Confirm `initialize`, 31 tools, one representative read-only call, ordinary success with no operations notice, application-log allowlist, and both KeyPool slots active.

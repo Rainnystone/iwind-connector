@@ -220,15 +220,15 @@ Skill 包在固定的 `iwind-aifin-connector/` 根目录下只包含 `SKILL.md`�
 
 ## 当前验证状态
 
-仓库具备自动化的 unit、integration、MCP/OAuth、Key 轮换、严格串行、打包、Secret 扫描和 dry-run build 测试。production MCP 路径已验证 31 个唯一只读工具和代表性串行查询。
+仓库具备自动化的 unit、integration、MCP/OAuth、Key 轮换、严格串行、打包、Secret 扫描和 dry-run build 测试。历史 v0.4 legacy 两槽 production 证据已在 `key-01 → key-02` 上验证 31 个唯一只读工具和代表性串行查询；这不是 v0.5 `key-03 → key-02 → key-01` primary layout 已完成 cutover 的证据。该 primary layout 仍等待单独批准的 Task 5 cutover。
 
 ChatGPT Work 的自定义 Plugin 注册、OAuth、工具发现和代表性查询已经验证；最终 Skill 上传、Skill 自动触发和 scheduled task 仍属于账户级验收。Grok Web adapter 已提供，但尚未在真实 Grok 账户中验证。最新边界以[验收清单](docs/acceptance-checklist.md)为准。
 
-## 公开仓库、许可证与数据访问边界
+## 仓库许可证与数据访问边界
 
-这个源码仓库已经公开，任何人都可以查看其实现和运行方式。但这不代表已经部署的网关是公共数据服务，也不包含或授予任何万得数据权限。每位部署者都必须使用自己的 Cloudflare 账户、身份配置、万得数据权限和私有 API Key。
+交付仓库的代码和文档不含 Secret，并按可审计要求维护。但这不代表已经部署的网关是公共数据服务，也不包含、授予或授权重新分发任何万得数据访问权限。每位部署者都必须使用自己的 Cloudflare 账户、身份配置、万得数据权限和私有 API Key。
 
-这个仓库目前没有 `LICENSE` 文件。仓库公开可见本身并不等于授予通用的开源复用许可，因此在正式添加许可证前，不应把它描述为已经按某个许可证开源。建议在鼓励重新分发或接受第三方贡献前，先选择并添加合适的许可证。
+这个仓库目前没有 `LICENSE` 文件。源码可获得或可访问本身并不等于授予通用的开源复用许可，因此在正式添加许可证前，不应把它描述为已经按某个许可证开源。建议在鼓励重新分发或接受第三方贡献前，先选择并添加合适的许可证。
 
 如果你 fork、部署或重新分发这个项目：
 

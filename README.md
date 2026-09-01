@@ -220,15 +220,15 @@ The Skill package contains only `SKILL.md`, `references/*.md`, and `evals/*.json
 
 ## Verification status
 
-The repository has automated unit, integration, MCP/OAuth, key-rotation, serialization, packaging, Secret-scan, and dry-run build coverage. The production MCP path has been verified with 31 unique read-only tools and representative serial queries.
+The repository has automated unit, integration, MCP/OAuth, key-rotation, serialization, packaging, Secret-scan, and dry-run build coverage. Historical v0.4 legacy two-slot production evidence verified 31 unique read-only tools and representative serial queries on `key-01 → key-02`; it is not evidence that the v0.5 `key-03 → key-02 → key-01` primary layout has been cut over. That primary layout remains pending the separately approved Task 5 cutover.
 
 ChatGPT Work custom-Plugin registration, OAuth, tool discovery, and a representative query have been verified. Final Skill upload, automatic Skill invocation, and scheduled-task behavior remain account-level acceptance steps. The Grok Web adapter is provided but has not yet been verified in a real Grok account. See the [acceptance checklist](docs/acceptance-checklist.md) for the current boundary.
 
-## Public repository, licensing, and data access
+## Repository licensing and data access
 
-This source repository is public so its implementation and operating model can be inspected. That does not make any deployed gateway a public data service, and it does not include or grant Wind data access. Every operator must use their own Cloudflare account, identity configuration, Wind entitlement, and private API keys.
+The delivery repository's code and documentation are Secret-free and designed to be auditable. That does not make any deployed gateway a public data service, and it does not include, grant, or authorize redistribution of Wind data access. Every operator must use their own Cloudflare account, identity configuration, Wind entitlement, and private API keys.
 
-This repository currently has no `LICENSE` file. Public visibility alone does not grant a general open-source reuse license, so the project should not be described as licensed open source unless and until a license is added. Choose and add an appropriate license before encouraging redistribution or third-party contributions.
+This repository currently has no `LICENSE` file. Source availability or access alone does not grant a general open-source reuse license, so the project should not be described as licensed open source unless and until a license is added. Choose and add an appropriate license before encouraging redistribution or third-party contributions.
 
 If you fork, deploy, or redistribute this project:
 
