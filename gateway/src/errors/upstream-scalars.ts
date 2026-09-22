@@ -1,5 +1,10 @@
 const VENDOR_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+export interface UpstreamLogScalars {
+  readonly upstreamStatus: number | null;
+  readonly upstreamErrorCode: string | null;
+}
+
 export function allowlistedUpstreamStatus(status: number | null | undefined): number | null {
   return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
 }

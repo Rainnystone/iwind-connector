@@ -6,7 +6,11 @@ import type {
   WindFailureCategory,
   WindFailureInput,
 } from "./types";
-import { allowlistedUpstreamErrorCode, allowlistedUpstreamStatus } from "./upstream-scalars";
+import {
+  allowlistedUpstreamErrorCode,
+  allowlistedUpstreamStatus,
+  type UpstreamLogScalars,
+} from "./upstream-scalars";
 
 const MAX_ERROR_ENVELOPE_BYTES = 16 * 1024;
 const HTTP_DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
@@ -61,10 +65,6 @@ const RETRY_CODES: Readonly<Record<Exclude<WindFailureCategory, "daily_quota" | 
 
 const SIGNAL_RULES = validateWindSignalRules(rulesJson);
 
-interface UpstreamScalars {
-  readonly upstreamStatus: number | null;
-  readonly upstreamErrorCode: string | null;
-}
 
 export function classifyWindFailure(input: WindFailureInput): ClassifiedFailure {
   const now = input.now ?? Date.now();
@@ -138,7 +138,7 @@ function structuredFailure(
   structuredResetAt: unknown,
   now: number,
   headers: WindFailureInput["headers"],
-  scalars: UpstreamScalars,
+  scalars: UpstreamLogScalars,
 ): ClassifiedFailure {
   const decision = FAILOVER_DECISIONS[rule.category];
   if (decision !== undefined) {
@@ -248,7 +248,7 @@ function header(headers: WindFailureInput["headers"], name: string): string | un
   return Object.entries(headers).find(([candidate]) => candidate.toLowerCase() === normalizedName)?.[1];
 }
 
-function upstreamScalars(status: number | undefined, vendorCode: string | null): UpstreamScalars {
+function upstreamScalars(status: number | undefined, vendorCode: string | null): UpstreamLogScalars {
   return {
     upstreamStatus: allowlistedUpstreamStatus(status),
     upstreamErrorCode: allowlistedUpstreamErrorCode(vendorCode),
@@ -259,7 +259,7 @@ function failure(
   category: WindFailureCategory,
   stableCode: string,
   decision: RetryDecision,
-  scalars: UpstreamScalars,
+  scalars: UpstreamLogScalars,
   resetAt: number | null = null,
 ): ClassifiedFailure {
   return { category, stableCode, decision, resetAt, ...scalars };
