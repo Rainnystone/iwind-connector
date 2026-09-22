@@ -431,9 +431,11 @@ describe("Wind invocation state machine", () => {
     const caller = scriptedCaller([SUCCESS]);
     const deps = dependencies(pool, caller);
 
+    const lines: string[] = [];
     const result = await invokeWindTool(REQUEST, {
       ...deps,
       env: { ...deps.env, WIND_API_KEY_01: missingValue },
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
     });
 
     expect(result.toolResult).toBe(SUCCESS);
@@ -446,6 +448,17 @@ describe("Wind invocation state machine", () => {
       ["key-01", "auth"],
       ["key-02", "success"],
     ]);
+    const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(logged).toEqual([
+      expect.objectContaining({
+        slotId: "key-02",
+        status: "success",
+        noticeCode: "WIND_KEY_ROTATED",
+        upstreamStatus: null,
+        upstreamErrorCode: null,
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain("AUTH_ERROR");
     },
   );
 

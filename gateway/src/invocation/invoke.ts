@@ -236,7 +236,7 @@ export async function invokeWindTool(
       } catch (error) {
         failure =
           error instanceof MissingWindSecretError
-            ? classifyWindFailure({ body: AUTH_FAILURE_BODY, now: now() })
+            ? localMissingSecretFailure(classifyWindFailure({ body: AUTH_FAILURE_BODY, now: now() }))
             : classifyThrownFailure(error, now());
       }
 
@@ -523,6 +523,10 @@ function failureToolResult(code: string): CallToolResult {
     content: [{ type: "text", text: `iWind request failed (${code}).` }],
     isError: true,
   };
+}
+
+function localMissingSecretFailure(failure: ClassifiedFailure): ClassifiedFailure {
+  return { ...failure, upstreamStatus: null, upstreamErrorCode: null };
 }
 
 function unknownFailure(): ClassifiedFailure {
