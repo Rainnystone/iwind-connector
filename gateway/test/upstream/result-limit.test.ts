@@ -149,7 +149,7 @@ describe("bounded Wind response streams", () => {
     const caller = createWindToolCaller({
       baseFetch: async () =>
         new Response(streamOf(new TextEncoder().encode(body)), {
-          status: 401,
+          status: 400,
           headers: { "content-type": "application/json" },
         }),
     });
@@ -173,6 +173,44 @@ describe("bounded Wind response streams", () => {
     expect(failure).toBeInstanceOf(WindCallFailure);
     if (!(failure instanceof WindCallFailure)) throw new Error("unexpected failure shape");
     expect(failure.forcedCategory).toBe("response_too_large");
+  });
+
+  it("classifies an oversized HTML 401 page as an authentication rejection, not response_too_large", async () => {
+    // Mirrors Wind's edge on 2026-09-22: a rejected Bearer returns 401 with a ~24 KiB HTML page.
+    const page = `<!doctype html><html><head><title>403</title></head><body>${"x".repeat(MAX_ERROR_ENVELOPE_BYTES + 8_000)}</body></html>`;
+    const caller = createWindToolCaller({
+      baseFetch: async () =>
+        new Response(streamOf(new TextEncoder().encode(page)), {
+          status: 401,
+          headers: { "content-type": "text/html" },
+        }),
+    });
+
+    const failure = await caller
+      .call({
+        upstream: getUpstream("stock_data"),
+        toolName: "get_stock_quote",
+        arguments: {},
+        apiKey: SECRET,
+        timeoutMs: 600_000,
+        maxResponseBytes: MAX_BYTES,
+      })
+      .then(
+        () => {
+          throw new Error("expected Wind call failure");
+        },
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(WindCallFailure);
+    if (!(failure instanceof WindCallFailure)) throw new Error("unexpected failure shape");
+    expect(failure.forcedCategory).toBeNull();
+    expect(failure.classificationInput.status).toBe(401);
+    expect(failure.classificationInput.body).toBeUndefined();
+    const classified = classifyWindFailure(failure.classificationInput);
+    expect(classified.category).toBe("auth");
+    expect(classified.stableCode).toBe("WIND_AUTH");
+    expect(classified.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_auth" });
   });
 });
 
