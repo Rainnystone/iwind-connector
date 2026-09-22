@@ -175,8 +175,8 @@ describe("bounded Wind response streams", () => {
     expect(failure.forcedCategory).toBe("response_too_large");
   });
 
-  it("classifies an oversized HTML 401 page as an authentication rejection, not response_too_large", async () => {
-    // Mirrors Wind's edge on 2026-09-22: a rejected Bearer returns 401 with a ~24 KiB HTML page.
+  it("classifies an oversized HTML 401 page as daily-quota failover, not response_too_large", async () => {
+    // Wind's edge can return HTTP 401 with a ~24 KiB HTML page and no structured error.code.
     const page = `<!doctype html><html><head><title>403</title></head><body>${"x".repeat(MAX_ERROR_ENVELOPE_BYTES + 8_000)}</body></html>`;
     const caller = createWindToolCaller({
       baseFetch: async () =>
@@ -208,9 +208,10 @@ describe("bounded Wind response streams", () => {
     expect(failure.classificationInput.status).toBe(401);
     expect(failure.classificationInput.body).toBeUndefined();
     const classified = classifyWindFailure(failure.classificationInput);
-    expect(classified.category).toBe("auth");
-    expect(classified.stableCode).toBe("WIND_AUTH");
-    expect(classified.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_auth" });
+    expect(classified.category).toBe("daily_quota");
+    expect(classified.stableCode).toBe("WIND_DAILY_QUOTA");
+    expect(classified.decision).toEqual({ kind: "failover_slot", disableAs: "exhausted_until_reset" });
+    expect(classified.resetAt).toBeNull();
   });
 });
 

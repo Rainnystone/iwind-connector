@@ -23,6 +23,8 @@ export interface ClassifiedFailure {
   readonly stableCode: string;
   readonly decision: RetryDecision;
   readonly resetAt: number | null;
+  readonly upstreamStatus: number | null;
+  readonly upstreamErrorCode: string | null;
 }
 
 export interface WindFailureInput {

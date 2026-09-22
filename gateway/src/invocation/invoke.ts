@@ -38,14 +38,37 @@ export async function invokeWindTool(
 
   if (route === null) {
     const notice = failureNotice(request.requestId, "WIND_REQUEST_FAILED", "unknown");
-    safeLog(log, logEvent(request, "unknown", null, "WIND_UNKNOWN", startedAt, now(), null, notice));
+    safeLog(log, logEvent(request, "unknown", null, "WIND_UNKNOWN", startedAt, now(), null, notice, null, null));
     return { toolResult: failureToolResult("WIND_UNKNOWN"), notice };
   }
 
   let heldLease: HeldLease | null = null;
   let initialCategory: WindFailureCategory | null = null;
   let failoverStarted = false;
+  let upstreamStatus: number | null = null;
+  let upstreamErrorCode: string | null = null;
+  let notedUpstream = false;
   let lastResponseBytes: number | null = null;
+  const currentLog = (
+    domain: GatewayLogEvent["domain"],
+    slotId: SlotId | null,
+    status: string,
+    finishedAt: number,
+    responseBytes: number | null,
+    notice: OpsNoticeV1 | null,
+  ): GatewayLogEvent =>
+    logEvent(
+      request,
+      domain,
+      slotId,
+      status,
+      startedAt,
+      finishedAt,
+      responseBytes,
+      notice,
+      upstreamStatus,
+      upstreamErrorCode,
+    );
   const caller =
     dependencies.caller ??
     createWindToolCaller({
@@ -55,12 +78,10 @@ export async function invokeWindTool(
       onCloseError: () => {
         safeLog(
           log,
-          logEvent(
-            request,
+          currentLog(
             route.domain,
             heldLease?.slotId ?? null,
             "MCP_CLOSE_FAILED",
-            startedAt,
             now(),
             lastResponseBytes,
             null,
@@ -90,12 +111,10 @@ export async function invokeWindTool(
       registerRepairLog(
         dependencies.waitUntil,
         log,
-        logEvent(
-          request,
+        currentLog(
           route.domain,
           lease.slotId,
           "lease_repair_required",
-          startedAt,
           now(),
           lastResponseBytes,
           null,
@@ -117,12 +136,10 @@ export async function invokeWindTool(
         );
         safeLog(
           log,
-          logEvent(
-            request,
+          currentLog(
             route.domain,
             null,
             acquisition.code,
-            startedAt,
             now(),
             lastResponseBytes,
             notice,
@@ -147,6 +164,8 @@ export async function invokeWindTool(
           reported,
           lastResponseBytes,
           "WIND_REPEATED_SLOT",
+          upstreamStatus,
+          upstreamErrorCode,
         );
       }
       attemptedSlots.add(acquisition.slotId);
@@ -174,12 +193,10 @@ export async function invokeWindTool(
               );
               safeLog(
                 log,
-                logEvent(
-                  request,
+                currentLog(
                   route.domain,
                   acquisition.slotId,
                   "KEY_POOL_REPORT_FAILED",
-                  startedAt,
                   now(),
                   lastResponseBytes,
                   notice,
@@ -195,12 +212,10 @@ export async function invokeWindTool(
               : null;
             safeLog(
               log,
-              logEvent(
-                request,
+              currentLog(
                 route.domain,
                 acquisition.slotId,
                 "success",
-                startedAt,
                 now(),
                 lastResponseBytes,
                 notice,
@@ -222,6 +237,11 @@ export async function invokeWindTool(
       }
 
       initialCategory ??= failure.category;
+      if (!notedUpstream) {
+        notedUpstream = true;
+        upstreamStatus = failure.upstreamStatus;
+        upstreamErrorCode = failure.upstreamErrorCode;
+      }
       if (failure.decision.kind === "failover_slot") {
         failoverStarted = true;
         const reported = await settleLease(failure.category, failure.resetAt);
@@ -237,6 +257,8 @@ export async function invokeWindTool(
             false,
             lastResponseBytes,
             "KEY_POOL_REPORT_FAILED",
+            upstreamStatus,
+            upstreamErrorCode,
           );
         }
         continue;
@@ -257,6 +279,8 @@ export async function invokeWindTool(
         reported,
         lastResponseBytes,
         failure.stableCode,
+        upstreamStatus,
+        upstreamErrorCode,
       );
     }
   } catch {
@@ -273,6 +297,8 @@ export async function invokeWindTool(
       reported,
       lastResponseBytes,
       "WIND_UNKNOWN",
+      upstreamStatus,
+      upstreamErrorCode,
     );
   } finally {
     if (heldLease !== null) await settleLease("unknown", null);
@@ -357,6 +383,8 @@ function classifyThrownFailure(error: unknown, now: number): ClassifiedFailure {
       stableCode: "WIND_RESPONSE_TOO_LARGE",
       decision: { kind: "stop" },
       resetAt: null,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
     };
   }
   return classifyWindFailure({ ...error.classificationInput, now });
@@ -429,6 +457,8 @@ function cleanupOrFailure(
   reportSucceeded: boolean,
   responseBytes: number | null,
   stableCode: string,
+  upstreamStatus: number | null,
+  upstreamErrorCode: string | null,
 ): InvocationResult {
   const effectiveCode = reportSucceeded ? stableCode : "KEY_POOL_REPORT_FAILED";
   const notice = failureNotice(
@@ -447,6 +477,8 @@ function cleanupOrFailure(
       finishedAt,
       responseBytes,
       notice,
+      upstreamStatus,
+      upstreamErrorCode,
     ),
   );
   return { toolResult: failureToolResult(effectiveCode), notice };
@@ -498,6 +530,8 @@ function unknownFailure(): ClassifiedFailure {
     stableCode: "WIND_UNKNOWN",
     decision: { kind: "stop" },
     resetAt: null,
+    upstreamStatus: null,
+    upstreamErrorCode: null,
   };
 }
 
@@ -517,6 +551,8 @@ function logEvent(
   finishedAt: number,
   responseBytes: number | null,
   notice: OpsNoticeV1 | null,
+  upstreamStatus: number | null,
+  upstreamErrorCode: string | null,
 ): GatewayLogEvent {
   return {
     requestId: request.requestId,
@@ -527,6 +563,8 @@ function logEvent(
     durationMs: Math.max(0, finishedAt - startedAt),
     responseBytes,
     noticeCode: notice?.code ?? null,
+    upstreamStatus,
+    upstreamErrorCode,
   };
 }
 

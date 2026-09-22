@@ -6,6 +6,7 @@ import type {
   WindFailureCategory,
   WindFailureInput,
 } from "./types";
+import { allowlistedUpstreamErrorCode, allowlistedUpstreamStatus } from "./upstream-scalars";
 
 const MAX_ERROR_ENVELOPE_BYTES = 16 * 1024;
 const HTTP_DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
@@ -33,14 +34,19 @@ const AUTH_FAILOVER: Extract<RetryDecision, { readonly kind: "failover_slot" }> 
   kind: "failover_slot",
   disableAs: "disabled_auth",
 };
-// Wind's edge rejects a missing or invalid Bearer with HTTP 401 and an HTML page (observed
-// 2026-09-22), never with the structured AUTH_ERROR envelope. Status is the only auth signal.
-const AUTH_REJECTION_STATUSES: ReadonlySet<number> = new Set([401, 403]);
+const DAILY_QUOTA_FAILOVER: Extract<RetryDecision, { readonly kind: "failover_slot" }> = {
+  kind: "failover_slot",
+  disableAs: "exhausted_until_reset",
+};
+// Status-only 401/403 has no structured vendor code. Branch A maps that to daily-quota
+// failover with no trusted reset, so the slot stays active. A structured code still wins,
+// and an unrecognized structured code stays unknown.
+const STATUS_ONLY_QUOTA_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 const FAILOVER_DECISIONS: Readonly<
   Partial<Record<WindFailureCategory, Extract<RetryDecision, { readonly kind: "failover_slot" }>>>
 > = {
-  daily_quota: { kind: "failover_slot", disableAs: "exhausted_until_reset" },
+  daily_quota: DAILY_QUOTA_FAILOVER,
   balance: { kind: "failover_slot", disableAs: "disabled_balance" },
   auth: AUTH_FAILOVER,
 };
@@ -55,46 +61,52 @@ const RETRY_CODES: Readonly<Record<Exclude<WindFailureCategory, "daily_quota" | 
 
 const SIGNAL_RULES = validateWindSignalRules(rulesJson);
 
+interface UpstreamScalars {
+  readonly upstreamStatus: number | null;
+  readonly upstreamErrorCode: string | null;
+}
+
 export function classifyWindFailure(input: WindFailureInput): ClassifiedFailure {
   const now = input.now ?? Date.now();
   const envelope = readBoundedEnvelope(input.body);
+  const scalars = upstreamScalars(input.status, envelope.kind === "structured" ? envelope.code : null);
 
   if (envelope.kind === "too_large") {
-    return failure("response_too_large", "WIND_RESPONSE_TOO_LARGE", STOP);
+    return failure("response_too_large", "WIND_RESPONSE_TOO_LARGE", STOP, scalars);
   }
 
   if (envelope.kind === "structured") {
     const rule = SIGNAL_RULES.rules.find((candidate) => candidate.code === envelope.code);
     if (rule !== undefined) {
-      return structuredFailure(rule, envelope.resetAt, now, input.headers);
+      return structuredFailure(rule, envelope.resetAt, now, input.headers, scalars);
     }
   }
 
-  if (isAuthRejectionStatus(input.status)) {
-    return failure("auth", "WIND_AUTH", AUTH_FAILOVER);
+  if (envelope.kind !== "structured" && isStatusOnlyQuotaStatus(input.status)) {
+    return failure("daily_quota", "WIND_DAILY_QUOTA", DAILY_QUOTA_FAILOVER, scalars);
   }
 
   if (input.status === 429) {
-    return failure("qps", RETRY_CODES.qps, retryAfterDecision(input.headers, now));
+    return failure("qps", RETRY_CODES.qps, retryAfterDecision(input.headers, now), scalars);
   }
 
   if (input.status !== undefined && input.status >= 500 && input.status <= 599) {
-    return failure("upstream_5xx", RETRY_CODES.upstream_5xx, RETRY_ONCE_500);
+    return failure("upstream_5xx", RETRY_CODES.upstream_5xx, RETRY_ONCE_500, scalars);
   }
 
   if (isAbortError(input.error)) {
-    return failure("timeout", RETRY_CODES.timeout, RETRY_ONCE_500);
+    return failure("timeout", RETRY_CODES.timeout, RETRY_ONCE_500, scalars);
   }
 
   if (isErrorLike(input.error)) {
-    return failure("network", RETRY_CODES.network, RETRY_ONCE_500);
+    return failure("network", RETRY_CODES.network, RETRY_ONCE_500, scalars);
   }
 
-  return failure("unknown", "WIND_UNKNOWN", STOP);
+  return failure("unknown", "WIND_UNKNOWN", STOP, scalars);
 }
 
-export function isAuthRejectionStatus(status: number | null | undefined): status is number {
-  return typeof status === "number" && AUTH_REJECTION_STATUSES.has(status);
+export function isStatusOnlyQuotaStatus(status: number | null | undefined): status is number {
+  return typeof status === "number" && STATUS_ONLY_QUOTA_STATUSES.has(status);
 }
 
 export function validateWindSignalRules(value: unknown): WindSignalRules {
@@ -126,21 +138,28 @@ function structuredFailure(
   structuredResetAt: unknown,
   now: number,
   headers: WindFailureInput["headers"],
+  scalars: UpstreamScalars,
 ): ClassifiedFailure {
   const decision = FAILOVER_DECISIONS[rule.category];
   if (decision !== undefined) {
-    return failure(rule.category, rule.stableCode, decision, parseFutureEpoch(structuredResetAt, now) ?? parseFutureHttpDate(header(headers, "x-ratelimit-reset"), now));
+    return failure(
+      rule.category,
+      rule.stableCode,
+      decision,
+      scalars,
+      parseFutureEpoch(structuredResetAt, now) ?? parseFutureHttpDate(header(headers, "x-ratelimit-reset"), now),
+    );
   }
 
   if (rule.category === "qps") {
-    return failure(rule.category, rule.stableCode, retryAfterDecision(headers, now));
+    return failure(rule.category, rule.stableCode, retryAfterDecision(headers, now), scalars);
   }
 
   if (rule.category === "concurrency") {
-    return failure(rule.category, rule.stableCode, RETRY_ONCE_3000);
+    return failure(rule.category, rule.stableCode, RETRY_ONCE_3000, scalars);
   }
 
-  return failure("unknown", "WIND_UNKNOWN", STOP);
+  return failure("unknown", "WIND_UNKNOWN", STOP, scalars);
 }
 
 function readBoundedEnvelope(body: WindFailureInput["body"]):
@@ -229,8 +248,21 @@ function header(headers: WindFailureInput["headers"], name: string): string | un
   return Object.entries(headers).find(([candidate]) => candidate.toLowerCase() === normalizedName)?.[1];
 }
 
-function failure(category: WindFailureCategory, stableCode: string, decision: RetryDecision, resetAt: number | null = null): ClassifiedFailure {
-  return { category, stableCode, decision, resetAt };
+function upstreamScalars(status: number | undefined, vendorCode: string | null): UpstreamScalars {
+  return {
+    upstreamStatus: allowlistedUpstreamStatus(status),
+    upstreamErrorCode: allowlistedUpstreamErrorCode(vendorCode),
+  };
+}
+
+function failure(
+  category: WindFailureCategory,
+  stableCode: string,
+  decision: RetryDecision,
+  scalars: UpstreamScalars,
+  resetAt: number | null = null,
+): ClassifiedFailure {
+  return { category, stableCode, decision, resetAt, ...scalars };
 }
 
 function isExactPath(value: unknown, expected: readonly string[]): boolean {

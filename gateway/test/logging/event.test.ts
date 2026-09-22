@@ -18,6 +18,8 @@ describe("gateway structured logs", () => {
       durationMs: 12,
       responseBytes: 128,
       noticeCode: null,
+      upstreamStatus: 401,
+      upstreamErrorCode: "DAILY_LIMIT_ERROR",
     };
 
     emitLogEvent(event, (line) => output.push(line));
@@ -28,7 +30,7 @@ describe("gateway structured logs", () => {
     expect(serialized).not.toContain(SECRET_SENTINEL);
     expect(serialized).not.toContain(ARGUMENT_SENTINEL);
     expect(serialized).not.toContain(RESULT_SENTINEL);
-    expect(Object.keys(event).sort()).toEqual([
+    expect(Object.keys(JSON.parse(output[0] ?? "") as object).sort()).toEqual([
       "domain",
       "durationMs",
       "noticeCode",
@@ -37,6 +39,8 @@ describe("gateway structured logs", () => {
       "slotId",
       "status",
       "toolName",
+      "upstreamErrorCode",
+      "upstreamStatus",
     ]);
   });
 
@@ -51,6 +55,8 @@ describe("gateway structured logs", () => {
       durationMs: 0,
       responseBytes: null,
       noticeCode: "WIND_REQUEST_FAILED",
+      upstreamStatus: null,
+      upstreamErrorCode: null,
     };
 
     emitLogEvent(event, sink);
@@ -71,6 +77,8 @@ describe("gateway structured logs", () => {
       durationMs: 13,
       responseBytes: null,
       noticeCode: "WIND_REQUEST_FAILED" as const,
+      upstreamStatus: 401,
+      upstreamErrorCode: "https://vendor.example/callback?code=secret-value-must-never-appear",
       arguments: ARGUMENT_SENTINEL,
       Authorization: SECRET_SENTINEL,
       key: SECRET_SENTINEL,
@@ -90,11 +98,15 @@ describe("gateway structured logs", () => {
       durationMs: 13,
       responseBytes: null,
       noticeCode: "WIND_REQUEST_FAILED",
+      upstreamStatus: 401,
+      upstreamErrorCode: null,
     });
     const serialized = output.join("\n");
     expect(serialized).not.toContain(ARGUMENT_SENTINEL);
     expect(serialized).not.toContain(SECRET_SENTINEL);
     expect(serialized).not.toContain(RESULT_SENTINEL);
     expect(serialized).not.toContain("error-body-must-never-appear");
+    expect(serialized).not.toContain("https://");
+    expect(serialized).not.toContain("callback");
   });
 });

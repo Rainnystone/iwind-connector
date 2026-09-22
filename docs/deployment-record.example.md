@@ -32,7 +32,7 @@ Use this template for a private deployment record outside the delivery repositor
 - MCP initialize and tools/list: `<result>`
 - Representative read-only smoke: `<tool name and pass/fail only>`
 - Wind serialization/slot/notice: `<sanitized result>`
-- Invocation application-log allowlist: `<confirm the gateway invocation application payload contains exactly requestId, domain, toolName, slotId, status, durationMs, responseBytes, noticeCode>`
+- Invocation application-log allowlist: `<confirm the gateway invocation application payload contains exactly requestId, domain, toolName, slotId, status, durationMs, responseBytes, noticeCode, upstreamStatus, upstreamErrorCode>`
 - Invocation application-log exclusions: `<confirm that payload contains no request arguments, business response, raw error/error body, headers/Authorization, cookies, OAuth code/state/token, identity/email, Secret values/fragments, or vendor envelope; do not apply this claim to the platform tail envelope>`
 - Admin status protection: `<result>`
 - Local tests, bundle inspection, and Secret scan: `<result>`

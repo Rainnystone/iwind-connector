@@ -1,4 +1,5 @@
 import type { UpstreamId } from "../config/upstreams";
+import { allowlistedUpstreamErrorCode, allowlistedUpstreamStatus } from "../errors/upstream-scalars";
 import type { SlotId } from "../key-pool/types";
 import type { OpsNoticeV1 } from "../notices/types";
 
@@ -11,6 +12,8 @@ export interface GatewayLogEvent {
   readonly durationMs: number;
   readonly responseBytes: number | null;
   readonly noticeCode: OpsNoticeV1["code"] | null;
+  readonly upstreamStatus: number | null;
+  readonly upstreamErrorCode: string | null;
 }
 
 export function emitLogEvent(
@@ -26,6 +29,8 @@ export function emitLogEvent(
     durationMs: event.durationMs,
     responseBytes: event.responseBytes,
     noticeCode: event.noticeCode,
+    upstreamStatus: allowlistedUpstreamStatus(event.upstreamStatus),
+    upstreamErrorCode: allowlistedUpstreamErrorCode(event.upstreamErrorCode),
   };
   sink(JSON.stringify(allowlistedEvent));
 }
