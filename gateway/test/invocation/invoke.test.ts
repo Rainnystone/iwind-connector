@@ -11,7 +11,7 @@ import type {
   WindToolCaller,
 } from "../../src/invocation/types";
 import { createWindToolCaller, WindCallFailure } from "../../src/upstream/call-tool";
-import { MAX_ERROR_ENVELOPE_BYTES } from "../../src/upstream/result-limit";
+import { MAX_ERROR_ENVELOPE_BYTES, limitResponseBody } from "../../src/upstream/result-limit";
 import { emitLogEvent } from "../../src/logging/event";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../../src/key-pool/types";
 import {
@@ -288,7 +288,7 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports.map((entry) => entry.category)).toEqual([category]);
   });
 
-  it("does not rotate when a structured auth envelope exceeds 16 KiB by one byte", async () => {
+  it("does not rotate when a structured envelope on a non-auth status exceeds 16 KiB by one byte", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
       lease("key-02", "lease-02"),
@@ -297,7 +297,7 @@ describe("Wind invocation state machine", () => {
     const caller = createWindToolCaller({
       baseFetch: async () =>
         new Response(body, {
-          status: 401,
+          status: 400,
           headers: { "content-type": "application/json" },
         }),
     });
@@ -310,6 +310,50 @@ describe("Wind invocation state machine", () => {
     });
     expect(pool.acquisitions).toHaveLength(1);
     expect(pool.reports.map((entry) => entry.category)).toEqual(["response_too_large"]);
+  });
+
+  it("rotates to key-02 when Wind rejects key-01 with an oversized HTML 401 page", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const page = `<!doctype html><html><head><title>403</title></head><body>${"x".repeat(24_000)}</body></html>`;
+    const attemptedKeys: string[] = [];
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          attemptedKeys.push(input.apiKey);
+          if (input.apiKey !== SECRET_01) return;
+          // Replay the edge response through the bounded stream so the recorder sees exactly what
+          // the SDK transport would: status 401 plus an HTML body larger than the envelope cap.
+          const limited = limitResponseBody(
+            new Response(page, { status: 401, headers: { "content-type": "text/html" } }),
+            8_388_608,
+            input.recorder,
+          );
+          await limited.arrayBuffer();
+          throw new Error("Error POSTing to endpoint (HTTP 401)");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(attemptedKeys).toEqual([SECRET_01, SECRET_02]);
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "auth",
+      finalStatus: "succeeded",
+    });
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
+      ["key-01", "auth"],
+      ["key-02", "success"],
+    ]);
   });
 
   it.each(["GATEWAY_BUSY", "KEY_POOL_EXHAUSTED"] as const)(

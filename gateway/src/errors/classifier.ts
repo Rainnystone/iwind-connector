@@ -29,12 +29,20 @@ interface WindSignalRules {
   readonly rules: readonly SignalRule[];
 }
 
+const AUTH_FAILOVER: Extract<RetryDecision, { readonly kind: "failover_slot" }> = {
+  kind: "failover_slot",
+  disableAs: "disabled_auth",
+};
+// Wind's edge rejects a missing or invalid Bearer with HTTP 401 and an HTML page (observed
+// 2026-09-22), never with the structured AUTH_ERROR envelope. Status is the only auth signal.
+const AUTH_REJECTION_STATUSES: ReadonlySet<number> = new Set([401, 403]);
+
 const FAILOVER_DECISIONS: Readonly<
   Partial<Record<WindFailureCategory, Extract<RetryDecision, { readonly kind: "failover_slot" }>>>
 > = {
   daily_quota: { kind: "failover_slot", disableAs: "exhausted_until_reset" },
   balance: { kind: "failover_slot", disableAs: "disabled_balance" },
-  auth: { kind: "failover_slot", disableAs: "disabled_auth" },
+  auth: AUTH_FAILOVER,
 };
 
 const RETRY_CODES: Readonly<Record<Exclude<WindFailureCategory, "daily_quota" | "balance" | "auth" | "unknown" | "response_too_large">, string>> = {
@@ -62,6 +70,10 @@ export function classifyWindFailure(input: WindFailureInput): ClassifiedFailure 
     }
   }
 
+  if (isAuthRejectionStatus(input.status)) {
+    return failure("auth", "WIND_AUTH", AUTH_FAILOVER);
+  }
+
   if (input.status === 429) {
     return failure("qps", RETRY_CODES.qps, retryAfterDecision(input.headers, now));
   }
@@ -79,6 +91,10 @@ export function classifyWindFailure(input: WindFailureInput): ClassifiedFailure 
   }
 
   return failure("unknown", "WIND_UNKNOWN", STOP);
+}
+
+export function isAuthRejectionStatus(status: number | null | undefined): status is number {
+  return typeof status === "number" && AUTH_REJECTION_STATUSES.has(status);
 }
 
 export function validateWindSignalRules(value: unknown): WindSignalRules {

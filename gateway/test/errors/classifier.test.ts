@@ -74,13 +74,51 @@ describe("Wind failure classifier", () => {
 
   it.each([
     [429, "qps", { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 }],
-    [401, "unknown", { kind: "stop" }],
+    [401, "auth", { kind: "failover_slot", disableAs: "disabled_auth" }],
+    [403, "auth", { kind: "failover_slot", disableAs: "disabled_auth" }],
+    [400, "unknown", { kind: "stop" }],
+    [404, "unknown", { kind: "stop" }],
     [503, "upstream_5xx", { kind: "retry_same_slot", delayMs: 500, maxRetries: 1 }],
-  ] as const)("classifies HTTP %i without treating status as a quota or auth signal", (status, category, decision) => {
+  ] as const)("classifies HTTP %i by status: only 401 and 403 are authentication evidence", (status, category, decision) => {
     const result = classifyWindFailure({ status, now: NOW });
 
     expect(result.category).toBe(category);
     expect(result.decision).toEqual(decision);
+  });
+
+  it("treats an HTTP 401 with a non-structured HTML body as an authentication rejection", () => {
+    const htmlPage = "<!doctype html><html><head><title>403</title></head><body>Forbidden</body></html>";
+    const result = classifyWindFailure({
+      status: 401,
+      headers: { "content-type": "text/html" },
+      body: htmlPage,
+      now: NOW,
+    });
+
+    expect(result.category).toBe("auth");
+    expect(result.stableCode).toBe("WIND_AUTH");
+    expect(result.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_auth" });
+    expect(result.resetAt).toBeNull();
+  });
+
+  it("lets an exact structured code win over a 401 or 403 status", async () => {
+    const dailyOn401 = classifyWindFailure({ status: 401, body: await fixture("daily-limit.json"), now: NOW });
+    const rateLimitOn403 = classifyWindFailure({ status: 403, body: await fixture("rate-limit.json"), now: NOW });
+
+    expect(dailyOn401.category).toBe("daily_quota");
+    expect(dailyOn401.decision).toEqual({ kind: "failover_slot", disableAs: "exhausted_until_reset" });
+    expect(rateLimitOn403.category).toBe("qps");
+  });
+
+  it("does not infer authentication from message text on a non-auth status", () => {
+    const result = classifyWindFailure({
+      status: 400,
+      body: JSON.stringify({ message: "AUTH_ERROR: invalid token" }),
+      now: NOW,
+    });
+
+    expect(result.category).toBe("unknown");
+    expect(result.decision).toEqual({ kind: "stop" });
   });
 
   it.each([
@@ -193,6 +231,7 @@ describe("Wind failure classifier", () => {
   it("returns stable codes for every exposed category", () => {
     const results = [
       classifyWindFailure({ status: 429, now: NOW }),
+      classifyWindFailure({ status: 401, now: NOW }),
       classifyWindFailure({ status: 503, now: NOW }),
       classifyWindFailure({ error: new TypeError("synthetic"), now: NOW }),
       classifyWindFailure({ body: "not JSON", now: NOW }),
@@ -200,6 +239,7 @@ describe("Wind failure classifier", () => {
 
     expect(results.map((result) => result.stableCode)).toEqual([
       "WIND_QPS",
+      "WIND_AUTH",
       "WIND_UPSTREAM_5XX",
       "WIND_NETWORK",
       "WIND_UNKNOWN",
