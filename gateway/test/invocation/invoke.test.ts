@@ -203,15 +203,28 @@ describe("Wind invocation state machine", () => {
       { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null },
     ]);
     const caller = scriptedCaller([classifiedBody("AUTH_ERROR")]);
+    const lines: string[] = [];
 
-    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
+    });
 
     expect(result.notice).toMatchObject({
       code: "WIND_KEY_ROTATION_FAILED",
       initialCategory: "auth",
     });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports).toHaveLength(1);
+    expect(pool.reports).toEqual([report("lease-01", "key-01", "auth", null, NOW)]);
+    const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(logged).toEqual([
+      expect.objectContaining({
+        status: "KEY_POOL_EXHAUSTED",
+        upstreamStatus: null,
+        upstreamErrorCode: "AUTH_ERROR",
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain("600519.SH");
   });
 
   it.each([
@@ -341,19 +354,38 @@ describe("Wind invocation state machine", () => {
       }),
     });
 
-    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+    const lines: string[] = [];
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
+    });
 
     expect(attemptedKeys).toEqual([SECRET_01, SECRET_02]);
     expect(result.toolResult).toBe(SUCCESS);
+    expect(result.toolResult.isError).toBe(false);
     expect(result.notice).toMatchObject({
       code: "WIND_KEY_ROTATED",
-      initialCategory: "auth",
+      initialCategory: "daily_quota",
       finalStatus: "succeeded",
     });
-    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
-      ["key-01", "auth"],
-      ["key-02", "success"],
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "daily_quota", null, NOW),
+      report("lease-02", "key-02", "success", null, NOW),
     ]);
+    const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(logged).toEqual([
+      expect.objectContaining({
+        slotId: "key-02",
+        status: "success",
+        noticeCode: "WIND_KEY_ROTATED",
+        upstreamStatus: 401,
+        upstreamErrorCode: null,
+      }),
+    ]);
+    const serialized = lines.join("\n");
+    expect(serialized).not.toContain("<!doctype");
+    expect(serialized).not.toContain(SECRET_01);
+    expect(serialized).not.toContain("600519.SH");
   });
 
   it.each(["GATEWAY_BUSY", "KEY_POOL_EXHAUSTED"] as const)(
@@ -399,9 +431,11 @@ describe("Wind invocation state machine", () => {
     const caller = scriptedCaller([SUCCESS]);
     const deps = dependencies(pool, caller);
 
+    const lines: string[] = [];
     const result = await invokeWindTool(REQUEST, {
       ...deps,
       env: { ...deps.env, WIND_API_KEY_01: missingValue },
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
     });
 
     expect(result.toolResult).toBe(SUCCESS);
@@ -414,6 +448,17 @@ describe("Wind invocation state machine", () => {
       ["key-01", "auth"],
       ["key-02", "success"],
     ]);
+    const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(logged).toEqual([
+      expect.objectContaining({
+        slotId: "key-02",
+        status: "success",
+        noticeCode: "WIND_KEY_ROTATED",
+        upstreamStatus: null,
+        upstreamErrorCode: null,
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain("AUTH_ERROR");
     },
   );
 
@@ -488,6 +533,8 @@ describe("Wind invocation state machine", () => {
       "slotId",
       "status",
       "toolName",
+      "upstreamErrorCode",
+      "upstreamStatus",
     ]);
     expect(lines.join("\n")).not.toContain(SECRET_01);
     expect(lines.join("\n")).not.toContain("argument-must-not-be-logged");

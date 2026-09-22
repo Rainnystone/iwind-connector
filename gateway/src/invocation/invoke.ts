@@ -4,6 +4,7 @@ import { getUpstream } from "../config/upstreams";
 import { loadManifest } from "../contracts/load-manifest";
 import { classifyWindFailure } from "../errors/classifier";
 import type { ClassifiedFailure, WindFailureCategory } from "../errors/types";
+import type { UpstreamLogScalars } from "../errors/upstream-scalars";
 import { acquireKeyPoolLease } from "../key-pool/client";
 import { getKeyPoolConfiguration } from "../key-pool/slots";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool/types";
@@ -38,14 +39,41 @@ export async function invokeWindTool(
 
   if (route === null) {
     const notice = failureNotice(request.requestId, "WIND_REQUEST_FAILED", "unknown");
-    safeLog(log, logEvent(request, "unknown", null, "WIND_UNKNOWN", startedAt, now(), null, notice));
+    safeLog(
+      log,
+      logEvent(request, "unknown", null, "WIND_UNKNOWN", startedAt, now(), null, notice, {
+        upstreamStatus: null,
+        upstreamErrorCode: null,
+      }),
+    );
     return { toolResult: failureToolResult("WIND_UNKNOWN"), notice };
   }
 
   let heldLease: HeldLease | null = null;
   let initialCategory: WindFailureCategory | null = null;
   let failoverStarted = false;
+  let upstreamLog: UpstreamLogScalars = { upstreamStatus: null, upstreamErrorCode: null };
+  let latchedFirstFailure = false;
   let lastResponseBytes: number | null = null;
+  const currentLog = (
+    domain: GatewayLogEvent["domain"],
+    slotId: SlotId | null,
+    status: string,
+    finishedAt: number,
+    responseBytes: number | null,
+    notice: OpsNoticeV1 | null,
+  ): GatewayLogEvent =>
+    logEvent(
+      request,
+      domain,
+      slotId,
+      status,
+      startedAt,
+      finishedAt,
+      responseBytes,
+      notice,
+      upstreamLog,
+    );
   const caller =
     dependencies.caller ??
     createWindToolCaller({
@@ -55,12 +83,10 @@ export async function invokeWindTool(
       onCloseError: () => {
         safeLog(
           log,
-          logEvent(
-            request,
+          currentLog(
             route.domain,
             heldLease?.slotId ?? null,
             "MCP_CLOSE_FAILED",
-            startedAt,
             now(),
             lastResponseBytes,
             null,
@@ -90,12 +116,10 @@ export async function invokeWindTool(
       registerRepairLog(
         dependencies.waitUntil,
         log,
-        logEvent(
-          request,
+        currentLog(
           route.domain,
           lease.slotId,
           "lease_repair_required",
-          startedAt,
           now(),
           lastResponseBytes,
           null,
@@ -117,12 +141,10 @@ export async function invokeWindTool(
         );
         safeLog(
           log,
-          logEvent(
-            request,
+          currentLog(
             route.domain,
             null,
             acquisition.code,
-            startedAt,
             now(),
             lastResponseBytes,
             notice,
@@ -147,6 +169,7 @@ export async function invokeWindTool(
           reported,
           lastResponseBytes,
           "WIND_REPEATED_SLOT",
+          upstreamLog,
         );
       }
       attemptedSlots.add(acquisition.slotId);
@@ -174,12 +197,10 @@ export async function invokeWindTool(
               );
               safeLog(
                 log,
-                logEvent(
-                  request,
+                currentLog(
                   route.domain,
                   acquisition.slotId,
                   "KEY_POOL_REPORT_FAILED",
-                  startedAt,
                   now(),
                   lastResponseBytes,
                   notice,
@@ -195,12 +216,10 @@ export async function invokeWindTool(
               : null;
             safeLog(
               log,
-              logEvent(
-                request,
+              currentLog(
                 route.domain,
                 acquisition.slotId,
                 "success",
-                startedAt,
                 now(),
                 lastResponseBytes,
                 notice,
@@ -217,11 +236,18 @@ export async function invokeWindTool(
       } catch (error) {
         failure =
           error instanceof MissingWindSecretError
-            ? classifyWindFailure({ body: AUTH_FAILURE_BODY, now: now() })
+            ? localMissingSecretFailure(classifyWindFailure({ body: AUTH_FAILURE_BODY, now: now() }))
             : classifyThrownFailure(error, now());
       }
 
       initialCategory ??= failure.category;
+      if (!latchedFirstFailure) {
+        latchedFirstFailure = true;
+        upstreamLog = {
+          upstreamStatus: failure.upstreamStatus,
+          upstreamErrorCode: failure.upstreamErrorCode,
+        };
+      }
       if (failure.decision.kind === "failover_slot") {
         failoverStarted = true;
         const reported = await settleLease(failure.category, failure.resetAt);
@@ -237,6 +263,7 @@ export async function invokeWindTool(
             false,
             lastResponseBytes,
             "KEY_POOL_REPORT_FAILED",
+            upstreamLog,
           );
         }
         continue;
@@ -257,6 +284,7 @@ export async function invokeWindTool(
         reported,
         lastResponseBytes,
         failure.stableCode,
+        upstreamLog,
       );
     }
   } catch {
@@ -273,6 +301,7 @@ export async function invokeWindTool(
       reported,
       lastResponseBytes,
       "WIND_UNKNOWN",
+      upstreamLog,
     );
   } finally {
     if (heldLease !== null) await settleLease("unknown", null);
@@ -357,6 +386,8 @@ function classifyThrownFailure(error: unknown, now: number): ClassifiedFailure {
       stableCode: "WIND_RESPONSE_TOO_LARGE",
       decision: { kind: "stop" },
       resetAt: null,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
     };
   }
   return classifyWindFailure({ ...error.classificationInput, now });
@@ -429,6 +460,7 @@ function cleanupOrFailure(
   reportSucceeded: boolean,
   responseBytes: number | null,
   stableCode: string,
+  upstreamLog: UpstreamLogScalars,
 ): InvocationResult {
   const effectiveCode = reportSucceeded ? stableCode : "KEY_POOL_REPORT_FAILED";
   const notice = failureNotice(
@@ -447,6 +479,7 @@ function cleanupOrFailure(
       finishedAt,
       responseBytes,
       notice,
+      upstreamLog,
     ),
   );
   return { toolResult: failureToolResult(effectiveCode), notice };
@@ -492,12 +525,18 @@ function failureToolResult(code: string): CallToolResult {
   };
 }
 
+function localMissingSecretFailure(failure: ClassifiedFailure): ClassifiedFailure {
+  return { ...failure, upstreamStatus: null, upstreamErrorCode: null };
+}
+
 function unknownFailure(): ClassifiedFailure {
   return {
     category: "unknown",
     stableCode: "WIND_UNKNOWN",
     decision: { kind: "stop" },
     resetAt: null,
+    upstreamStatus: null,
+    upstreamErrorCode: null,
   };
 }
 
@@ -517,6 +556,7 @@ function logEvent(
   finishedAt: number,
   responseBytes: number | null,
   notice: OpsNoticeV1 | null,
+  upstreamLog: UpstreamLogScalars,
 ): GatewayLogEvent {
   return {
     requestId: request.requestId,
@@ -527,6 +567,8 @@ function logEvent(
     durationMs: Math.max(0, finishedAt - startedAt),
     responseBytes,
     noticeCode: notice?.code ?? null,
+    upstreamStatus: upstreamLog.upstreamStatus,
+    upstreamErrorCode: upstreamLog.upstreamErrorCode,
   };
 }
 

@@ -4,7 +4,7 @@
 
 The packaged Skill is public-instruction material: it contains no endpoint, executable code, platform adapter, tool schema copy, credential, or gateway state. The gateway is the enforcement boundary for OAuth, the read-only manifest, serial Key leasing, deterministic failure classification, bounded responses, and log reduction. Wind and the identity provider are external systems; their free-form messages are not trusted control signals.
 
-The supported action surface is read-only data retrieval. Write and trading actions are outside scope. Upstream calls are strictly serial within the private primary ring `key-05 → key-04 → key-03 → key-02 → key-01`; additional bindings add failover capacity, never parallelism or per-request round-robin. Only exact allowlisted quota, balance, or authentication signals may change slots; QPS, concurrency, network, timeout, 5xx, and unknown failures stay on the same slot or stop.
+The supported action surface is read-only data retrieval. Write and trading actions are outside scope. Upstream calls are strictly serial within the private primary ring `key-05 → key-04 → key-03 → key-02 → key-01`; additional bindings add failover capacity, never parallelism or per-request round-robin. Only exact allowlisted quota, balance, or authentication signals, plus status-only HTTP 401/403 treated as daily quota, may change slots; QPS, concurrency, network, timeout, 5xx, and unknown failures stay on the same slot or stop.
 
 ## Secret handling
 
@@ -29,8 +29,10 @@ Gateway invocation logs contain exactly these fields:
 - `durationMs`
 - `responseBytes`
 - `noticeCode`
+- `upstreamStatus` (nullable HTTP status integer, or null)
+- `upstreamErrorCode` (nullable identifier-shaped vendor `error.code`, or null)
 
-Do not add request arguments, response bodies, raw error text, headers, cookies, authorization codes, tokens, emails, Key values/fragments, or vendor envelopes. Model-visible operations notices are independently limited to `schemaVersion`, `code`, `initialCategory`, `finalStatus`, and `requestId`.
+Do not add request arguments, response bodies, raw error text, headers, cookies, authorization codes, tokens, emails, Key values/fragments, or vendor envelopes. A vendor code that is not a short identifier is stored as null. Model-visible operations notices are independently limited to `schemaVersion`, `code`, `initialCategory`, `finalStatus`, and `requestId`.
 
 ## Release gate
 

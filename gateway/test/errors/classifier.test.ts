@@ -73,20 +73,27 @@ describe("Wind failure classifier", () => {
   });
 
   it.each([
-    [429, "qps", { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 }],
-    [401, "auth", { kind: "failover_slot", disableAs: "disabled_auth" }],
-    [403, "auth", { kind: "failover_slot", disableAs: "disabled_auth" }],
-    [400, "unknown", { kind: "stop" }],
-    [404, "unknown", { kind: "stop" }],
-    [503, "upstream_5xx", { kind: "retry_same_slot", delayMs: 500, maxRetries: 1 }],
-  ] as const)("classifies HTTP %i by status: only 401 and 403 are authentication evidence", (status, category, decision) => {
-    const result = classifyWindFailure({ status, now: NOW });
+    [429, "qps", { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 }, null],
+    [401, "daily_quota", { kind: "failover_slot", disableAs: "exhausted_until_reset" }, null],
+    [403, "daily_quota", { kind: "failover_slot", disableAs: "exhausted_until_reset" }, null],
+    [400, "unknown", { kind: "stop" }, null],
+    [404, "unknown", { kind: "stop" }, null],
+    [503, "upstream_5xx", { kind: "retry_same_slot", delayMs: 500, maxRetries: 1 }, null],
+  ] as const)(
+    "classifies HTTP %i by status: 401 and 403 without a vendor code are daily-quota failover",
+    (status, category, decision, resetAt) => {
+      const result = classifyWindFailure({ status, now: NOW });
 
-    expect(result.category).toBe(category);
-    expect(result.decision).toEqual(decision);
-  });
+      expect(result.category).toBe(category);
+      expect(result.decision).toEqual(decision);
+      expect(result.resetAt).toBe(resetAt);
+      if (status === 401 || status === 403) {
+        expect(result.stableCode).toBe("WIND_DAILY_QUOTA");
+      }
+    },
+  );
 
-  it("treats an HTTP 401 with a non-structured HTML body as an authentication rejection", () => {
+  it("treats an HTTP 401 with a non-structured HTML body as daily-quota failover without a trusted reset", () => {
     const htmlPage = "<!doctype html><html><head><title>403</title></head><body>Forbidden</body></html>";
     const result = classifyWindFailure({
       status: 401,
@@ -95,18 +102,39 @@ describe("Wind failure classifier", () => {
       now: NOW,
     });
 
-    expect(result.category).toBe("auth");
-    expect(result.stableCode).toBe("WIND_AUTH");
-    expect(result.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_auth" });
+    expect(result.category).toBe("daily_quota");
+    expect(result.stableCode).toBe("WIND_DAILY_QUOTA");
+    expect(result.decision).toEqual({ kind: "failover_slot", disableAs: "exhausted_until_reset" });
     expect(result.resetAt).toBeNull();
+  });
+
+  it("keeps an unrecognized structured code on HTTP 401 unknown", () => {
+    const result = classifyWindFailure({
+      status: 401,
+      body: JSON.stringify({ error: { code: "SOMETHING_ELSE" } }),
+      now: NOW,
+    });
+
+    expect(result.category).toBe("unknown");
+    expect(result.stableCode).toBe("WIND_UNKNOWN");
+    expect(result.decision).toEqual({ kind: "stop" });
+    expect(result.upstreamStatus).toBe(401);
+    expect(result.upstreamErrorCode).toBe("SOMETHING_ELSE");
   });
 
   it("lets an exact structured code win over a 401 or 403 status", async () => {
     const dailyOn401 = classifyWindFailure({ status: 401, body: await fixture("daily-limit.json"), now: NOW });
+    const balanceOn403 = classifyWindFailure({ status: 403, body: await fixture("balance.json"), now: NOW });
+    const authOn401 = classifyWindFailure({ status: 401, body: await fixture("auth.json"), now: NOW });
     const rateLimitOn403 = classifyWindFailure({ status: 403, body: await fixture("rate-limit.json"), now: NOW });
 
     expect(dailyOn401.category).toBe("daily_quota");
     expect(dailyOn401.decision).toEqual({ kind: "failover_slot", disableAs: "exhausted_until_reset" });
+    expect(balanceOn403.category).toBe("balance");
+    expect(balanceOn403.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_balance" });
+    expect(authOn401.category).toBe("auth");
+    expect(authOn401.stableCode).toBe("WIND_AUTH");
+    expect(authOn401.decision).toEqual({ kind: "failover_slot", disableAs: "disabled_auth" });
     expect(rateLimitOn403.category).toBe("qps");
   });
 
@@ -239,7 +267,7 @@ describe("Wind failure classifier", () => {
 
     expect(results.map((result) => result.stableCode)).toEqual([
       "WIND_QPS",
-      "WIND_AUTH",
+      "WIND_DAILY_QUOTA",
       "WIND_UPSTREAM_5XX",
       "WIND_NETWORK",
       "WIND_UNKNOWN",
