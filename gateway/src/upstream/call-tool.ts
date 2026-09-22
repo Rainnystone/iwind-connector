@@ -10,6 +10,7 @@ import {
   type RequestOptions,
 } from "@modelcontextprotocol/client";
 
+import { isAuthRejectionStatus } from "../errors/classifier";
 import type { WindFailureInput } from "../errors/types";
 import type { WindToolCaller } from "../invocation/types";
 
@@ -136,10 +137,17 @@ function boundedOptions(timeoutMs: number, signal: AbortSignal): BoundedRequestO
 }
 
 function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFailure {
+  if (error instanceof WindCallFailure) return error;
+  // An auth rejection is decided by status alone; Wind's HTML error page exceeds the bounded
+  // envelope, and letting the truncation rule win would hide the rejection as response_too_large.
+  const rejectedStatus = error instanceof SdkHttpError ? error.status : record.status;
+  if (isAuthRejectionStatus(rejectedStatus)) {
+    const boundedBody = record.errorEnvelopeTruncated || record.errorBody === undefined ? {} : { body: record.errorBody };
+    return new WindCallFailure({ status: rejectedStatus, headers: record.headers, ...boundedBody }, record.responseBytes);
+  }
   if (record.errorEnvelopeTruncated) {
     return new WindCallFailure({}, record.responseBytes, "response_too_large");
   }
-  if (error instanceof WindCallFailure) return error;
   if (error instanceof ResponseTooLargeError || record.responseTooLarge) {
     return new WindCallFailure({}, record.responseBytes, "response_too_large");
   }
