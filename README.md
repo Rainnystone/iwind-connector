@@ -68,7 +68,7 @@ This repository's primary-layout revision is awaiting merge. The currently deplo
 2. Exact daily-quota, balance, authentication, or operator-disable events move the cursor to the next declared slot: `key-05 → key-04 → key-03 → key-02 → key-01 → key-05`. Balance, authentication, and manual-disable states remain unavailable until explicitly restored.
 3. Each logical invocation can acquire every eligible slot at most once. If that bounded pass is exhausted, the call stops; a later independent invocation starts a new bounded pass from the persisted cursor.
 4. A trusted future `reset_at` keeps a daily-exhausted slot unavailable until its reset. When no trusted reset is supplied, the slot remains eligible for a later wrap-around probe instead of requiring a guessed reset time or manual restore.
-5. QPS cooldown, concurrency errors, timeouts, network failures, oversized responses, upstream 5xx responses, and unknown errors do not move the cursor or burn through the pool.
+5. QPS cooldown, concurrency errors, timeouts, network failures, oversized responses, and upstream 5xx responses stay on the same slot. An unclassified Wind failure tries each remaining active key once for that request and leaves those slots active; it does not park them until a reset.
 6. The agent receives a sanitized notice when rotation occurred, failed, or the pool is unavailable. Key values and raw infrastructure details are never included.
 
 This is event-driven ring failover, not per-request round-robin load balancing and not a way to bypass Wind account or contract limits. Only use keys you are legally allowed to pool under your Wind agreement.

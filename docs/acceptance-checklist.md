@@ -53,7 +53,7 @@ Use this checklist for a same-URL release. Keep business responses, request argu
 - [x] Confirm one invocation tries each eligible slot at most once, stops after the bounded pass, and a later independent invocation re-probes from the persisted cursor.
 - [x] Confirm a trusted future reset is skipped, an unknown-reset daily-quota slot can be probed after wrap-around, and eviction preserves the cursor.
 - [x] Confirm balance/auth/manual states remain unavailable until restore; restoring a slot does not take the cursor from the current slot.
-- [x] Confirm QPS, concurrency, network, timeout, oversized response, upstream 5xx, and unknown outcomes do not move the cursor.
+- [x] Confirm QPS, concurrency, network, timeout, oversized response, and upstream 5xx outcomes do not move the cursor. An unclassified walk leaves every touched slot active and rests the cursor on the last slot leased.
 - [x] Use synthetic 1/2/3/4-slot definitions to prove ordered selection and wrap without creating or deploying a third real Key.
 
 ## v0.4 future staging rollout

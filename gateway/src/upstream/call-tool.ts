@@ -16,6 +16,7 @@ import type { WindToolCaller } from "../invocation/types";
 
 import { createAuthorizedFetch } from "./authorized-fetch";
 import {
+  MAX_ERROR_ENVELOPE_BYTES,
   ResponseTooLargeError,
   createResponseRecorder,
   type ResponseRecord,
@@ -157,10 +158,18 @@ function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFail
   if (isTimeoutError(error)) {
     return timeoutFailure(record.responseBytes);
   }
-  if (
-    error instanceof SdkHttpError ||
-    (record.status !== null && (record.status < 200 || record.status >= 300))
-  ) {
+  const httpStatus = error instanceof SdkHttpError ? error.status : record.status;
+  if (typeof httpStatus === "number" && httpStatus >= 200 && httpStatus < 300) {
+    return new WindCallFailure(
+      {
+        status: httpStatus,
+        headers: record.headers,
+        ...retainedStructuredBody(record.errorBody),
+      },
+      record.responseBytes,
+    );
+  }
+  if (error instanceof SdkHttpError || (record.status !== null && (record.status < 200 || record.status >= 300))) {
     const status = error instanceof SdkHttpError ? error.status : record.status;
     if (status === null) return new WindCallFailure({}, record.responseBytes);
     return new WindCallFailure(
@@ -176,6 +185,29 @@ function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFail
     return new WindCallFailure({ error }, record.responseBytes);
   }
   return new WindCallFailure({}, record.responseBytes);
+}
+
+function retainedStructuredBody(
+  body: Uint8Array | undefined,
+): { readonly body: Uint8Array } | undefined {
+  if (body === undefined || body.byteLength === 0 || body.byteLength > MAX_ERROR_ENVELOPE_BYTES) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+    );
+    if (!isRecord(parsed) || !isRecord(parsed.error) || typeof parsed.error.code !== "string") {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return { body };
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function safeRecordResponseBytes(
