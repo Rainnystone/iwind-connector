@@ -74,7 +74,7 @@ Restore only after the underlying reason has been resolved: a replacement was se
 
 An exact daily-quota event always advances the cursor. A trusted future `reset_at` keeps that slot unavailable until lazy activation or its alarm; do not restore it early. If no trusted reset is available, the slot remains eligible for a later wrap-around probe, so no guessed refresh time or manual restore is required. Each logical call tries every eligible slot at most once; after a bounded exhaustion, a later independent call begins a new pass from `currentSlotId`.
 
-QPS cooldown makes the current cursor temporarily busy and must not be bypassed by moving to another Key. Concurrency, network, timeout, oversized response, 5xx, and unknown failures release the lease without moving the cursor.
+QPS cooldown makes the current cursor temporarily busy and must not be bypassed by moving to another Key. Concurrency, network, timeout, oversized response, and 5xx failures release the lease without moving the cursor. An unclassified failure releases the lease as active, and the invocation may acquire the next active key once for that request.
 
 ## Refresh the schema snapshot
 

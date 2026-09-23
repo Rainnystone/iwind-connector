@@ -1,4 +1,4 @@
-const VENDOR_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const VENDOR_ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 export interface UpstreamLogScalars {
   readonly upstreamStatus: number | null;

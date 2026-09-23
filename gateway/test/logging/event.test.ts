@@ -66,6 +66,35 @@ describe("gateway structured logs", () => {
     expect(() => JSON.parse(sink.mock.calls[0]?.[0] ?? "")).not.toThrow();
   });
 
+  it("keeps a bounded dotted vendor code and drops a longer one", () => {
+    const output: string[] = [];
+    const event: GatewayLogEvent = {
+      requestId: "request-04",
+      domain: "stock_data",
+      toolName: "get_stock_quote",
+      slotId: "key-01",
+      status: "WIND_UNKNOWN",
+      durationMs: 4,
+      responseBytes: null,
+      noticeCode: "WIND_KEY_ROTATION_FAILED",
+      upstreamStatus: 200,
+      upstreamErrorCode: "vendor.code-1",
+    };
+
+    emitLogEvent(event, (line) => output.push(line));
+    expect(JSON.parse(output[0] ?? "")).toMatchObject({
+      upstreamStatus: 200,
+      upstreamErrorCode: "vendor.code-1",
+    });
+
+    output.length = 0;
+    emitLogEvent(
+      { ...event, upstreamErrorCode: "A".repeat(65) },
+      (line) => output.push(line),
+    );
+    expect(JSON.parse(output[0] ?? "")).toMatchObject({ upstreamErrorCode: null });
+  });
+
   it("drops runtime extra properties from a structurally assignable event object", () => {
     const output: string[] = [];
     const taintedEvent = {

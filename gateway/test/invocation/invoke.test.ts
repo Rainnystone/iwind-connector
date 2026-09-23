@@ -276,29 +276,53 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports[0]?.resetAt).toBe(NOW + 2_000);
   });
 
-  it.each([
-    ["unknown", new WindCallFailure({ body: "not-json" }), "unknown"],
-    [
-      "response limit",
-      new WindCallFailure({}, 8_388_609, "response_too_large"),
-      "response_too_large",
-    ],
-  ] as const)("stops on %s without consuming the next slot", async (_name, failure, category) => {
+  it("tries the next active slot once after an unclassified Wind failure and returns that success", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
       lease("key-02", "lease-02"),
     ]);
-    const caller = scriptedCaller([failure]);
+    const caller = scriptedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "unknown",
+      finalStatus: "succeeded",
+    });
+    expect(caller.slots).toEqual([SECRET_01, SECRET_02]);
+    expect(pool.acquisitions).toEqual([
+      { requestId: REQUEST.requestId, attemptedSlotIds: [] },
+      { requestId: REQUEST.requestId, attemptedSlotIds: ["key-01"] },
+    ]);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "unknown", null, NOW),
+      report("lease-02", "key-02", "success", null, NOW),
+    ]);
+  });
+
+  it("stops on response limit without consuming the next slot", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([
+      new WindCallFailure({}, 8_388_609, "response_too_large"),
+    ]);
 
     const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
 
     expect(result.notice).toMatchObject({
       code: "WIND_REQUEST_FAILED",
-      initialCategory: category,
+      initialCategory: "response_too_large",
     });
     expect(caller.slots).toEqual([SECRET_01]);
     expect(pool.acquisitions).toHaveLength(1);
-    expect(pool.reports.map((entry) => entry.category)).toEqual([category]);
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["response_too_large"]);
   });
 
   it("does not rotate when a structured envelope on a non-auth status exceeds 16 KiB by one byte", async () => {
@@ -462,7 +486,7 @@ describe("Wind invocation state machine", () => {
     },
   );
 
-  it("fails closed when an isError result has only text that resembles a quota code", async () => {
+  it("walks prose that merely mentions a quota code and does not report daily quota", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
       lease("key-02", "lease-02"),
@@ -472,16 +496,259 @@ describe("Wind invocation state machine", () => {
         content: [{ type: "text", text: "DAILY_LIMIT_ERROR" }],
         isError: true,
       },
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "unknown",
+      finalStatus: "succeeded",
+    });
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category, entry.resetAt])).toEqual([
+      ["key-01", "unknown", null],
+      ["key-02", "success", null],
+    ]);
+  });
+
+  it("classifies a single bounded JSON text block by its error code", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([
+      {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: { code: "DAILY_LIMIT_ERROR", reset_at: 1_700_003_600 } }),
+          },
+        ],
+        isError: true,
+      },
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "daily_quota",
+    });
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "daily_quota", 1_700_003_600_000, NOW),
+      report("lease-02", "key-02", "success", null, NOW),
+    ]);
+  });
+
+  it("lets a string structured error code win over a text envelope", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([
+      {
+        content: [
+          { type: "text", text: JSON.stringify({ error: { code: "DAILY_LIMIT_ERROR" } }) },
+        ],
+        structuredContent: { error: { code: "AUTH_ERROR" } },
+        isError: true,
+      },
+      SUCCESS,
     ]);
 
     const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
 
     expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "auth",
+    });
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["auth", "success"]);
+  });
+
+  it("walks an unrecognized structured code instead of a daily-quota text envelope", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([
+      {
+        content: [
+          { type: "text", text: JSON.stringify({ error: { code: "DAILY_LIMIT_ERROR" } }) },
+        ],
+        structuredContent: { error: { code: "NOT_ON_THE_LIST" } },
+        isError: true,
+      },
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "unknown",
+    });
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
+      ["key-01", "unknown"],
+      ["key-02", "success"],
+    ]);
+  });
+
+  it("walks bare isError, invalid JSON, and an oversized text block without calling them daily quota", async () => {
+    const oversized = `{"error":{"code":"DAILY_LIMIT_ERROR"},"padding":"${"x".repeat(MAX_ERROR_ENVELOPE_BYTES)}"}`;
+    const cases = [
+      { content: [], isError: true },
+      { content: [{ type: "text" as const, text: "{not-json" }], isError: true },
+      {
+        content: [
+          { type: "text" as const, text: JSON.stringify({ error: { code: 12 } }) },
+        ],
+        isError: true,
+      },
+      { content: [{ type: "text" as const, text: oversized }], isError: true },
+      {
+        content: [
+          { type: "text" as const, text: JSON.stringify({ error: { code: "DAILY_LIMIT_ERROR" } }) },
+          { type: "text" as const, text: "second block" },
+        ],
+        isError: true,
+      },
+    ];
+
+    for (const [index, first] of cases.entries()) {
+      const pool = scriptedPool([
+        lease("key-01", "lease-01"),
+        lease("key-02", "lease-02"),
+      ]);
+      const caller = scriptedCaller([first, SUCCESS]);
+      const result = await invokeWindTool(
+        { ...REQUEST, requestId: `bare-${index}` },
+        dependencies(pool, caller),
+      );
+
+      expect(result.toolResult, `case ${index}`).toBe(SUCCESS);
+      expect(result.notice, `case ${index}`).toMatchObject({
+        code: "WIND_KEY_ROTATED",
+        initialCategory: "unknown",
+      });
+      expect(pool.reports.map((entry) => entry.category), `case ${index}`).toEqual([
+        "unknown",
+        "success",
+      ]);
+      expect(pool.reports.some((entry) => entry.category === "daily_quota"), `case ${index}`).toBe(
+        false,
+      );
+      expect(
+        pool.reports.some((entry) => entry.category === "response_too_large"),
+        `case ${index}`,
+      ).toBe(false);
+    }
+  });
+
+  it("stops after every scripted active slot returns unclassified", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+      lease("key-03", "lease-03"),
+    ]);
+    const caller = scriptedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "iWind request failed (KEY_POOL_EXHAUSTED)." }],
+    });
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATION_FAILED",
+      initialCategory: "unknown",
+      finalStatus: "failed",
+    });
+    expect(caller.slots).toEqual([SECRET_01, SECRET_02, SECRET_03]);
+    expect(pool.acquisitions.map((entry) => entry.attemptedSlotIds)).toEqual([
+      [],
+      ["key-01"],
+      ["key-01", "key-02"],
+      ["key-01", "key-02", "key-03"],
+    ]);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "unknown", null, NOW),
+      report("lease-02", "key-02", "unknown", null, NOW),
+      report("lease-03", "key-03", "unknown", null, NOW),
+    ]);
+  });
+
+  it("does not retry or walk when the caller throws a generic Error", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([new Error("local-bug"), SUCCESS]);
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(result.notice).toMatchObject({
       code: "WIND_REQUEST_FAILED",
       initialCategory: "unknown",
     });
-    expect(pool.acquisitions).toHaveLength(1);
     expect(caller.slots).toEqual([SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["unknown"]);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("stops an unknown walk when the lease report fails", async () => {
+    const pool = scriptedPool(
+      [lease("key-01", "lease-01"), lease("key-02", "lease-02")],
+      1,
+    );
+    const caller = scriptedCaller([new WindCallFailure({ body: "not-json" }), SUCCESS]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (KEY_POOL_REPORT_FAILED)." }],
+    });
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATION_FAILED",
+      initialCategory: "unknown",
+    });
+    expect(caller.slots).toEqual([SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+  });
+
+  it("stops an unknown walk when the pool hands the same slot back", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-01", "lease-repeat"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (WIND_REPEATED_SLOT)." }],
+    });
+    expect(caller.slots).toEqual([SECRET_01]);
+    expect(pool.reports.map((entry) => [entry.leaseId, entry.category])).toEqual([
+      ["lease-01", "unknown"],
+      ["lease-repeat", "unknown"],
+    ]);
   });
 
   it("rejects a repeated failover slot and releases that lease as unknown", async () => {
@@ -616,6 +883,213 @@ describe("Wind invocation state machine", () => {
 
     expect(results.every((result) => result.toolResult === SUCCESS)).toBe(true);
     expect(maxInFlight).toBe(1);
+  });
+
+  it("names the leased slot on a hard stop and leaves the pool-exhausted line without a slot", async () => {
+    const stopPool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const stopLines: string[] = [];
+    const stopped = await invokeWindTool(REQUEST, {
+      ...dependencies(
+        stopPool,
+        scriptedCaller([new WindCallFailure({}, 8_388_609, "response_too_large")]),
+      ),
+      log: (event) => emitLogEvent(event, (line) => stopLines.push(line)),
+    });
+
+    expect(stopped.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "response_too_large",
+    });
+    expect(stopLines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        slotId: "key-01",
+        status: "WIND_RESPONSE_TOO_LARGE",
+      }),
+    ]);
+
+    const exhaustedLines: string[] = [];
+    const exhausted = await invokeWindTool(
+      { ...REQUEST, requestId: "unknown-exhaust" },
+      {
+        ...dependencies(
+          scriptedPool([lease("key-01", "lease-01")]),
+          scriptedCaller([new WindCallFailure({ body: "not-json" })]),
+        ),
+        log: (event) => emitLogEvent(event, (line) => exhaustedLines.push(line)),
+      },
+    );
+
+    expect(exhausted.notice).toMatchObject({
+      code: "WIND_KEY_ROTATION_FAILED",
+      initialCategory: "unknown",
+    });
+    expect(exhaustedLines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        slotId: null,
+        status: "KEY_POOL_EXHAUSTED",
+      }),
+    ]);
+  });
+
+  it("logs status 200 from a thrown Wind failure without retaining an ordinary 2xx body", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const body = JSON.stringify({
+      error: { code: "vendor.code-1" },
+      detail: "body-must-not-be-logged",
+    });
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          if (input.apiKey !== SECRET_01) return;
+          const limited = limitResponseBody(
+            new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+            8_388_608,
+            input.recorder,
+          );
+          await limited.arrayBuffer();
+          throw new Error("protocol failure message-must-not-be-logged");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const lines: string[] = [];
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
+    });
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "unknown",
+    });
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        slotId: "key-02",
+        status: "success",
+        upstreamStatus: 200,
+        upstreamErrorCode: null,
+      }),
+    ]);
+    const serialized = lines.join("\n");
+    expect(serialized).not.toContain("body-must-not-be-logged");
+    expect(serialized).not.toContain("message-must-not-be-logged");
+    expect(serialized).not.toContain("vendor.code-1");
+  });
+
+  it("does not walk or network-retry a generic Error that never got a Wind result", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const attempted: string[] = [];
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          attempted.push(input.apiKey);
+          throw new Error("local-bug");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "unknown",
+    });
+    expect(attempted).toEqual([SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("retries a TypeError on HTTP 200 on the same slot instead of walking", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const attempted: string[] = [];
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          attempted.push(input.apiKey);
+          input.recorder.begin(new Response(null, { status: 200 }));
+          if (attempted.length === 1) throw new TypeError("synthetic network");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toBeNull();
+    expect(attempted).toEqual([SECRET_01, SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it("logs a retained vendor code on a 200 failure when that envelope is already in hand", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const envelope = JSON.stringify({ error: { code: "vendor.code-1" } });
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          if (input.apiKey !== SECRET_01) return;
+          input.recorder.begin(new Response(null, { status: 200 }));
+          input.recorder.captureErrorChunk(new TextEncoder().encode(envelope));
+          throw new Error("protocol failure message-must-not-be-logged");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const lines: string[] = [];
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      log: (event) => emitLogEvent(event, (line) => lines.push(line)),
+    });
+
+    expect(result.notice).toMatchObject({ initialCategory: "unknown" });
+    expect(pool.reports.map((entry) => entry.category)).toEqual(["unknown", "success"]);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        upstreamStatus: 200,
+        upstreamErrorCode: "vendor.code-1",
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain("message-must-not-be-logged");
   });
 
   it("keeps a pending staging control dormant in production and consumes it once in staging", async () => {

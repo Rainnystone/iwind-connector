@@ -158,23 +158,94 @@ describe("local KeyPool integration", () => {
     },
   );
 
-  it("stops an unknown synthetic outcome without retry or next-slot failover", async () => {
+  it("walks a synthetic unknown on key-05 to a later success and leaves key-05 active", async () => {
     await setNextOutcome("key-05", "unknown");
-    const caller = trackedCaller([]);
+    const caller = trackedCaller([SUCCESS]);
 
     const result = await invokeWindTool(
-      { ...REQUEST, requestId: "task-10-unknown" },
+      { ...REQUEST, requestId: "task-10-unknown-walk" },
       dependencies(caller),
     );
 
-    expect(result.toolResult.isError).toBe(true);
+    expect(result.toolResult).toBe(SUCCESS);
     expect(result.notice).toMatchObject({
-      code: "WIND_REQUEST_FAILED",
+      code: "WIND_KEY_ROTATED",
+      initialCategory: "unknown",
+      finalStatus: "succeeded",
+    });
+    expect(caller.slots).toEqual(["key-04"]);
+    expect(await slotState("key-05")).toBe("active");
+    expect(await slotState("key-04")).toBe("active");
+    expect(await currentSlotId()).toBe("key-04");
+  });
+
+  it("tries each active slot once for unclassified failures, then leases one again on the next request", async () => {
+    const exhaustedCaller = trackedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+    ]);
+
+    const exhausted = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-unknown-bound" },
+      dependencies(exhaustedCaller),
+    );
+
+    expect(exhausted.toolResult.isError).toBe(true);
+    expect(exhausted.notice).toMatchObject({
+      code: "WIND_KEY_ROTATION_FAILED",
+      initialCategory: "unknown",
+      finalStatus: "failed",
+    });
+    expect(exhausted.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (KEY_POOL_EXHAUSTED)." }],
+    });
+    expect(exhaustedCaller.slots).toEqual(["key-05", "key-04", "key-03", "key-02", "key-01"]);
+    const status = await activeKeyPool().getStatus();
+    expect(status.slots.map((slot) => [slot.slotId, slot.state, slot.resetAt])).toEqual([
+      ["key-05", "active", null],
+      ["key-04", "active", null],
+      ["key-03", "active", null],
+      ["key-02", "active", null],
+      ["key-01", "active", null],
+    ]);
+    expect(status.slots.some((slot) => slot.lastErrorCode === "daily_quota")).toBe(false);
+    expect(await currentSlotId()).toBe("key-01");
+
+    const nextCaller = trackedCaller([SUCCESS]);
+    const next = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-unknown-again" },
+      dependencies(nextCaller),
+    );
+
+    expect(next.toolResult).toBe(SUCCESS);
+    expect(next.notice).toBeNull();
+    expect(nextCaller.slots).toEqual(["key-01"]);
+  });
+
+  it("does not lease a manually disabled slot during an unknown walk", async () => {
+    expect((await admin("/admin/key-pool/slots/key-04/disable", {})).status).toBe(204);
+    expect(await slotState("key-04")).toBe("disabled_manual");
+    const caller = trackedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(
+      { ...REQUEST, requestId: "task-10-unknown-skips-disabled" },
+      dependencies(caller),
+    );
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toMatchObject({
+      code: "WIND_KEY_ROTATED",
       initialCategory: "unknown",
     });
-    expect(caller.slots).toEqual([]);
-    expect(await slotState("key-04")).toBe("active");
-    expect(await currentSlotId()).toBe("key-05");
+    expect(caller.slots).toEqual(["key-05", "key-03"]);
+    expect(await slotState("key-04")).toBe("disabled_manual");
+    expect(await slotState("key-05")).toBe("active");
   });
 
   it("stops an oversized-response outcome without moving the cursor", async () => {

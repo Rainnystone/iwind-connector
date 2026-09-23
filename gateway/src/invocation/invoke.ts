@@ -11,6 +11,7 @@ import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool
 import { emitLogEvent, type GatewayLogEvent } from "../logging/event";
 import type { OpsNoticeV1 } from "../notices/types";
 import { createWindToolCaller, WindCallFailure } from "../upstream/call-tool";
+import { MAX_ERROR_ENVELOPE_BYTES } from "../upstream/result-limit";
 
 import { MissingWindSecretError, resolveWindSecret } from "./resolve-secret";
 import type {
@@ -170,11 +171,13 @@ export async function invokeWindTool(
           lastResponseBytes,
           "WIND_REPEATED_SLOT",
           upstreamLog,
+          acquisition.slotId,
         );
       }
       attemptedSlots.add(acquisition.slotId);
 
       let failure: ClassifiedFailure;
+      let windUnknownWalk = false;
       try {
         const apiKey = resolveWindSecret(dependencies.env, acquisition.slotId);
         const outcome = await callOnLease(
@@ -233,6 +236,7 @@ export async function invokeWindTool(
         );
         if (outcome.kind === "completed") return outcome.result;
         failure = outcome.failure;
+        windUnknownWalk = outcome.windUnknownWalk;
       } catch (error) {
         failure =
           error instanceof MissingWindSecretError
@@ -264,6 +268,28 @@ export async function invokeWindTool(
             lastResponseBytes,
             "KEY_POOL_REPORT_FAILED",
             upstreamLog,
+            acquisition.slotId,
+          );
+        }
+        continue;
+      }
+      if (windUnknownWalk) {
+        failoverStarted = true;
+        const reported = await settleLease("unknown", null);
+        if (!reported) {
+          return cleanupOrFailure(
+            request,
+            route,
+            startedAt,
+            now(),
+            log,
+            initialCategory,
+            failoverStarted,
+            false,
+            lastResponseBytes,
+            "KEY_POOL_REPORT_FAILED",
+            upstreamLog,
+            acquisition.slotId,
           );
         }
         continue;
@@ -285,10 +311,12 @@ export async function invokeWindTool(
         lastResponseBytes,
         failure.stableCode,
         upstreamLog,
+        acquisition.slotId,
       );
     }
   } catch {
     initialCategory ??= "unknown";
+    const leasedSlotId = heldLease?.slotId ?? null;
     const reported = await settleLease("unknown", null);
     return cleanupOrFailure(
       request,
@@ -302,6 +330,7 @@ export async function invokeWindTool(
       lastResponseBytes,
       "WIND_UNKNOWN",
       upstreamLog,
+      leasedSlotId,
     );
   } finally {
     if (heldLease !== null) await settleLease("unknown", null);
@@ -310,7 +339,11 @@ export async function invokeWindTool(
 
 type CallOnLeaseOutcome =
   | { readonly kind: "completed"; readonly result: InvocationResult }
-  | { readonly kind: "failed"; readonly failure: ClassifiedFailure };
+  | {
+      readonly kind: "failed";
+      readonly failure: ClassifiedFailure;
+      readonly windUnknownWalk: boolean;
+    };
 
 async function callOnLease(
   request: InvocationRequest,
@@ -348,7 +381,11 @@ async function callOnLease(
         await sleep(toolFailure.decision.delayMs);
         continue;
       }
-      return { kind: "failed", failure: toolFailure };
+      return {
+        kind: "failed",
+        failure: toolFailure,
+        windUnknownWalk: toolFailure.category === "unknown",
+      };
     } catch (error) {
       const failure = classifyThrownFailure(error, now());
       if (error instanceof WindCallFailure) recordBytes(error.responseBytes);
@@ -357,25 +394,57 @@ async function callOnLease(
         await sleep(failure.decision.delayMs);
         continue;
       }
-      return { kind: "failed", failure };
+      return {
+        kind: "failed",
+        failure,
+        windUnknownWalk: error instanceof WindCallFailure && failure.category === "unknown",
+      };
     }
   }
 }
 
 function classifyToolErrorResult(result: CallToolResult, now: number): ClassifiedFailure | null {
   if (result.isError !== true) return null;
-  if (!isRecord(result.structuredContent) || !isRecord(result.structuredContent.error)) {
-    return unknownFailure();
+  const structured = readStructuredVendorCode(result.structuredContent);
+  if (structured !== null) {
+    const projected = {
+      error: {
+        code: structured.code,
+        ...(typeof structured.resetAt === "number" ? { reset_at: structured.resetAt } : {}),
+      },
+    };
+    return classifyWindFailure({ body: JSON.stringify(projected), now });
   }
-  const error = result.structuredContent.error;
-  if (typeof error.code !== "string") return unknownFailure();
-  const projected = {
-    error: {
-      code: error.code,
-      ...(typeof error.reset_at === "number" ? { reset_at: error.reset_at } : {}),
-    },
-  };
-  return classifyWindFailure({ body: JSON.stringify(projected), now });
+  const textEnvelope = readSingleTextVendorEnvelope(result);
+  if (textEnvelope !== null) {
+    return classifyWindFailure({ body: textEnvelope, now });
+  }
+  return unknownFailure();
+}
+
+function readStructuredVendorCode(
+  structuredContent: CallToolResult["structuredContent"],
+): { readonly code: string; readonly resetAt: unknown } | null {
+  if (!isRecord(structuredContent) || !isRecord(structuredContent.error)) return null;
+  if (typeof structuredContent.error.code !== "string") return null;
+  return { code: structuredContent.error.code, resetAt: structuredContent.error.reset_at };
+}
+
+function readSingleTextVendorEnvelope(result: CallToolResult): string | null {
+  if (result.content.length !== 1) return null;
+  const block = result.content[0];
+  if (block === undefined || block.type !== "text") return null;
+  if (new TextEncoder().encode(block.text).byteLength > MAX_ERROR_ENVELOPE_BYTES) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(block.text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.error) || typeof parsed.error.code !== "string") {
+    return null;
+  }
+  return block.text;
 }
 
 function classifyThrownFailure(error: unknown, now: number): ClassifiedFailure {
@@ -461,6 +530,7 @@ function cleanupOrFailure(
   responseBytes: number | null,
   stableCode: string,
   upstreamLog: UpstreamLogScalars,
+  slotId: SlotId | null,
 ): InvocationResult {
   const effectiveCode = reportSucceeded ? stableCode : "KEY_POOL_REPORT_FAILED";
   const notice = failureNotice(
@@ -473,7 +543,7 @@ function cleanupOrFailure(
     logEvent(
       request,
       route.domain,
-      null,
+      slotId,
       effectiveCode,
       startedAt,
       finishedAt,

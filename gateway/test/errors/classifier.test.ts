@@ -248,6 +248,36 @@ describe("Wind failure classifier", () => {
     expect(impossibleHttpDate.resetAt).toBeNull();
   });
 
+  it("logs a bounded dotted code without treating it as daily quota", () => {
+    const dotted = classifyWindFailure({
+      status: 200,
+      body: JSON.stringify({ error: { code: "vendor.code-1" } }),
+      now: NOW,
+    });
+    const urlShaped = classifyWindFailure({
+      status: 200,
+      body: JSON.stringify({ error: { code: "https://vendor.example/callback" } }),
+      now: NOW,
+    });
+    const tooLong = classifyWindFailure({
+      body: JSON.stringify({ error: { code: "A".repeat(65) } }),
+      now: NOW,
+    });
+    const atCap = classifyWindFailure({
+      body: JSON.stringify({ error: { code: `a.b-${"C".repeat(60)}` } }),
+      now: NOW,
+    });
+
+    expect(dotted.category).toBe("unknown");
+    expect(dotted.decision).toEqual({ kind: "stop" });
+    expect(dotted.upstreamStatus).toBe(200);
+    expect(dotted.upstreamErrorCode).toBe("vendor.code-1");
+    expect(urlShaped.category).toBe("unknown");
+    expect(urlShaped.upstreamErrorCode).toBeNull();
+    expect(tooLong.upstreamErrorCode).toBeNull();
+    expect(atCap.upstreamErrorCode).toHaveLength(64);
+  });
+
   it("does not parse an oversized envelope or infer a failure category from its text", () => {
     const oversized = `${"x".repeat(16 * 1024)}DAILY_LIMIT_ERROR`;
     const result = classifyWindFailure({ body: oversized, now: NOW });
