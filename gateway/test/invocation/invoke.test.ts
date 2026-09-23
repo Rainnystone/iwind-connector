@@ -987,6 +987,73 @@ describe("Wind invocation state machine", () => {
     expect(serialized).not.toContain("vendor.code-1");
   });
 
+  it("does not walk or network-retry a generic Error that never got a Wind result", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const attempted: string[] = [];
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          attempted.push(input.apiKey);
+          throw new Error("local-bug");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "unknown",
+    });
+    expect(attempted).toEqual([SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("retries a TypeError on HTTP 200 on the same slot instead of walking", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const attempted: string[] = [];
+    const caller = createWindToolCaller({
+      createAttempt: (input) => ({
+        async connect() {
+          attempted.push(input.apiKey);
+          input.recorder.begin(new Response(null, { status: 200 }));
+          if (attempted.length === 1) throw new TypeError("synthetic network");
+        },
+        async callTool() {
+          return SUCCESS;
+        },
+        async close() {},
+      }),
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(result.notice).toBeNull();
+    expect(attempted).toEqual([SECRET_01, SECRET_01]);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
   it("logs a retained vendor code on a 200 failure when that envelope is already in hand", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),

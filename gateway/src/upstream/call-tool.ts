@@ -160,6 +160,12 @@ function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFail
   }
   const httpStatus = error instanceof SdkHttpError ? error.status : record.status;
   if (typeof httpStatus === "number" && httpStatus >= 200 && httpStatus < 300) {
+    if (error instanceof TypeError) {
+      return new WindCallFailure(
+        { error, status: httpStatus, headers: record.headers },
+        record.responseBytes,
+      );
+    }
     return new WindCallFailure(
       {
         status: httpStatus,
@@ -184,7 +190,9 @@ function toWindCallFailure(error: unknown, record: ResponseRecord): WindCallFail
   if (error instanceof TypeError) {
     return new WindCallFailure({ error }, record.responseBytes);
   }
-  return new WindCallFailure({}, record.responseBytes);
+  // No Wind status was recorded. Re-throw so a local Error stays a single stop
+  // instead of becoming an unclassified Wind failure that walks the pool.
+  throw error;
 }
 
 function retainedStructuredBody(
