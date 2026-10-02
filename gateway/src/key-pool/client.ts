@@ -16,21 +16,24 @@ export async function acquireKeyPoolLease(
   const deadline = Date.now() + ACQUIRE_WAIT_MS;
   let firstAttempt = true;
   let retryAfterMs: number | null = null;
+  let queueDepth = 0;
 
   while (true) {
     const now = Date.now();
     if (!firstAttempt && now >= deadline) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth };
     }
     firstAttempt = false;
 
     const result = await keyPool.acquireLease({ requestId, attemptedSlotIds, now });
     if (result.ok || result.code === "KEY_POOL_EXHAUSTED") return result;
     retryAfterMs = result.retryAfterMs;
+    queueDepth = result.queueDepth;
+    if (retryAfterMs !== null && retryAfterMs > ACQUIRE_WAIT_MS) return result;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth };
     }
     await wait(Math.min(ACQUIRE_POLL_MS, remainingMs));
   }

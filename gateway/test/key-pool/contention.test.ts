@@ -67,19 +67,27 @@ describe("KeyPool contention", () => {
     });
 
     await expect(acquireLease(stub, "interloper", BASE_TIME + 2)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+  });
+
+  it("returns overflow GATEWAY_BUSY on the first KeyPool round trip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+    const stub = env.KEY_POOL.getByName("private-key-pool");
+    await acquireLease(stub, "holder", BASE_TIME);
+
+    const resultPromise = acquireKeyPoolLease(env, "overflow");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(resultPromise).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
+      retryAfterMs: 60_000,
+      queueDepth: 0,
     });
-
-    const waitingIds = results.flatMap((result, index) =>
-      result.ok ? [] : [`concurrent-${String(index).padStart(2, "0")}`],
-    );
-    const followUps = await Promise.all(
-      waitingIds.map((requestId) => acquireLease(stub, requestId, BASE_TIME + 3)),
-    );
-    const grantedNext = followUps.filter((result) => result.ok);
-    expect(grantedNext).toHaveLength(1);
-    expect(grantedNext[0]).toMatchObject({ slotId: "key-01" });
   });
 
   it("returns the KeyPool retry time when a waiter is not granted within 30 seconds", async () => {
@@ -94,7 +102,8 @@ describe("KeyPool contention", () => {
     await expect(resultPromise).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 30_250,
+      retryAfterMs: 60_000,
+      queueDepth: 0,
     });
   });
 

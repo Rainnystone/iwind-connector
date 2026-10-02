@@ -268,7 +268,7 @@ describe("local KeyPool integration", () => {
     expect(await currentSlotId()).toBe("key-05");
   });
 
-  it("serializes overlapping logical requests through the one real coordination atom", async () => {
+  it("admits one overlapping call and refuses the other at once when the lease outlasts 30s", async () => {
     const caller = trackedCaller([SUCCESS, SUCCESS], 75);
 
     const results = await Promise.all([
@@ -282,9 +282,16 @@ describe("local KeyPool integration", () => {
       ),
     ]);
 
-    expect(results.every(({ toolResult }) => toolResult === SUCCESS)).toBe(true);
+    const succeeded = results.filter(({ toolResult }) => toolResult === SUCCESS);
+    const refused = results.filter(({ toolResult }) => toolResult !== SUCCESS);
+    expect(succeeded).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    const refusedText = refused[0]?.toolResult.content.find((block) => block.type === "text");
+    expect(refusedText && "text" in refusedText ? refusedText.text : "").toMatch(
+      /^iWind request failed \(GATEWAY_BUSY\)\. Retry after \d+s\.$/,
+    );
     expect(caller.maxInFlight).toBe(1);
-    expect(caller.slots).toEqual(["key-05", "key-05"]);
+    expect(caller.slots).toEqual(["key-05"]);
   });
 
   it("keeps every local admin route exact and bounds malformed request bodies", async () => {

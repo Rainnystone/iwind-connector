@@ -23,11 +23,13 @@ export type AcquireLeaseResult =
       readonly leaseId: string;
       readonly slotId: SlotId;
       readonly expiresAt: number;
+      readonly queueDepth: number;
     }
   | {
       readonly ok: false;
       readonly code: "GATEWAY_BUSY" | "KEY_POOL_EXHAUSTED";
       readonly retryAfterMs: number | null;
+      readonly queueDepth: number;
     };
 
 export interface ReportOutcomeInput {

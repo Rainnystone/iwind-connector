@@ -20,6 +20,8 @@ describe("gateway structured logs", () => {
       noticeCode: null,
       upstreamStatus: 401,
       upstreamErrorCode: "DAILY_LIMIT_ERROR",
+      queueWaitMs: 0,
+      queueDepth: 0,
     };
 
     emitLogEvent(event, (line) => output.push(line));
@@ -34,6 +36,8 @@ describe("gateway structured logs", () => {
       "domain",
       "durationMs",
       "noticeCode",
+      "queueDepth",
+      "queueWaitMs",
       "requestId",
       "responseBytes",
       "slotId",
@@ -42,6 +46,48 @@ describe("gateway structured logs", () => {
       "upstreamErrorCode",
       "upstreamStatus",
     ]);
+  });
+
+  it("emits queue wait and depth as integers on a busy line and drops other fields", () => {
+    const output: string[] = [];
+    const event = {
+      requestId: "request-05",
+      domain: "stock_data" as const,
+      toolName: "get_stock_quote",
+      slotId: null,
+      status: "GATEWAY_BUSY",
+      durationMs: 0,
+      responseBytes: null,
+      noticeCode: "GATEWAY_BUSY" as const,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
+      queueWaitMs: 250,
+      queueDepth: 3,
+      arguments: ARGUMENT_SENTINEL,
+      Authorization: SECRET_SENTINEL,
+      queueWaitMsBad: 1.5,
+    };
+
+    emitLogEvent(event, (line) => output.push(line));
+
+    const parsed = JSON.parse(output[0] ?? "") as {
+      queueWaitMs: unknown;
+      queueDepth: unknown;
+    };
+    expect(parsed).toMatchObject({
+      slotId: null,
+      status: "GATEWAY_BUSY",
+      queueWaitMs: 250,
+      queueDepth: 3,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
+    });
+    expect(Number.isInteger(parsed.queueWaitMs)).toBe(true);
+    expect(Number.isInteger(parsed.queueDepth)).toBe(true);
+    const serialized = output.join("\n");
+    expect(serialized).not.toContain(ARGUMENT_SENTINEL);
+    expect(serialized).not.toContain(SECRET_SENTINEL);
+    expect(serialized).not.toContain("queueWaitMsBad");
   });
 
   it("uses one structured console call without expanding arbitrary error objects", () => {
@@ -57,6 +103,8 @@ describe("gateway structured logs", () => {
       noticeCode: "WIND_REQUEST_FAILED",
       upstreamStatus: null,
       upstreamErrorCode: null,
+      queueWaitMs: 0,
+      queueDepth: 0,
     };
 
     emitLogEvent(event, sink);
@@ -79,6 +127,8 @@ describe("gateway structured logs", () => {
       noticeCode: "WIND_KEY_ROTATION_FAILED",
       upstreamStatus: 200,
       upstreamErrorCode: "vendor.code-1",
+      queueWaitMs: 12,
+      queueDepth: 1,
     };
 
     emitLogEvent(event, (line) => output.push(line));
@@ -108,6 +158,8 @@ describe("gateway structured logs", () => {
       noticeCode: "WIND_REQUEST_FAILED" as const,
       upstreamStatus: 401,
       upstreamErrorCode: "https://vendor.example/callback?code=secret-value-must-never-appear",
+      queueWaitMs: 1.5,
+      queueDepth: -3,
       arguments: ARGUMENT_SENTINEL,
       Authorization: SECRET_SENTINEL,
       key: SECRET_SENTINEL,
@@ -129,6 +181,8 @@ describe("gateway structured logs", () => {
       noticeCode: "WIND_REQUEST_FAILED",
       upstreamStatus: 401,
       upstreamErrorCode: null,
+      queueWaitMs: 0,
+      queueDepth: 0,
     });
     const serialized = output.join("\n");
     expect(serialized).not.toContain(ARGUMENT_SENTINEL);
