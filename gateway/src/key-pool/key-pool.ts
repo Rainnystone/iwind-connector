@@ -391,18 +391,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
   ): number {
     const medianMs = this.medianHoldMs();
     let blockerMs = this.cursorCooldownRemainingMs(now);
-    if (liveLease !== null) blockerMs = this.holderRemainingMs(liveLease, now, medianMs);
-    else if (otherReservation !== null) blockerMs = medianMs;
+    if (liveLease !== null) blockerMs = holderRemainingMs(liveLease, now, medianMs);
+    else if (otherReservation !== null) blockerMs = otherReservation.expires_at - now + medianMs;
     return blockerMs + this.callersAhead(requestId) * medianMs;
-  }
-
-  private holderRemainingMs(lease: LeaseRow, now: number, medianMs: number): number {
-    const remainingMs = lease.expires_at - now;
-    if (lease.granted_at === null) return Math.min(remainingMs, medianMs);
-    const elapsedMs = now - lease.granted_at;
-    const longerHolds = this.holdSamples().filter((holdMs) => holdMs > elapsedMs);
-    const expectedMs = longerHolds.length === 0 ? medianMs : median(longerHolds) - elapsedMs;
-    return Math.min(remainingMs, expectedMs);
   }
 
   private busy(retryAfterMs: number | null, inLine: boolean): AcquireLeaseResult {
@@ -678,6 +669,13 @@ function outcomeTransition(input: ReportOutcomeInput, currentState: SlotState): 
     default:
       return { state: "active", resetAt: null, cooldownUntil: null, advanceCursor: false };
   }
+}
+
+// Every blocker counts down at least as fast as the clock, so a refused caller that returns at its
+// rejoin time fits its budget unless the line is still full behind an overdue holder.
+function holderRemainingMs(lease: LeaseRow, now: number, medianMs: number): number {
+  if (lease.granted_at === null) return 0;
+  return Math.max(0, medianMs - (now - lease.granted_at));
 }
 
 function median(ascending: readonly number[]): number {

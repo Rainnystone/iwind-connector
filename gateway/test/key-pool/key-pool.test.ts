@@ -1091,7 +1091,7 @@ describe("KeyPool SQLite Durable Object", () => {
     const stub = keyPool();
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    const observedAt = BASE_TIME + 60_000 - 10_000;
+    const observedAt = BASE_TIME + 1_000;
 
     await expect(acquireLease(stub, "waiter-a", observedAt)).resolves.toMatchObject({
       ok: false,
@@ -1108,7 +1108,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 2_000,
+      retryAfterMs: 1_000,
       queueDepth: 3,
       inLine: false,
     });
@@ -1199,7 +1199,7 @@ describe("KeyPool SQLite Durable Object", () => {
     const heldAt = BASE_TIME + 12_001;
     const holder = await acquireLease(stub, "holder", heldAt);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    const observedAt = heldAt + 60_000 - 10_000;
+    const observedAt = heldAt + 2_000;
     await acquireLease(stub, "waiter-a", observedAt);
     await acquireLease(stub, "waiter-b", observedAt);
 
@@ -1240,7 +1240,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "fourth", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 20_000,
+      retryAfterMs: 15_000,
       queueDepth: 4,
       inLine: true,
     });
@@ -1250,7 +1250,7 @@ describe("KeyPool SQLite Durable Object", () => {
     const stub = keyPool();
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    const observedAt = BASE_TIME + 60_000 - 6_000;
+    const observedAt = BASE_TIME + 2_000;
     await acquireLease(stub, "waiter-a", observedAt);
     await acquireLease(stub, "waiter-b", observedAt);
     await acquireLease(stub, "waiter-c", observedAt);
@@ -1451,7 +1451,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "during-attempts", BASE_TIME + 55_000)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 5_000,
+      retryAfterMs: 0,
       queueDepth: 1,
       inLine: true,
     });
@@ -1483,7 +1483,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "too-soon", BASE_TIME + 59_999)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 1,
+      retryAfterMs: 0,
       queueDepth: 1,
       inLine: true,
     });

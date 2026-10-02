@@ -135,52 +135,41 @@ describe("KeyPool admission against the caller's deadline", () => {
       return now;
     }
 
-    it("estimates a holder past the median from the holds that ran longer", async () => {
+    it("counts a holder down from the median hold", async () => {
+      const stub = keyPool();
+      const start = await recordHolds(stub, [4_000, 6_000, 10_000, 12_000, 14_000]);
+      await grantedLease(stub, "holder", start);
+
+      await expect(acquire(stub, "a", start + 3_000)).resolves.toEqual({
+        ok: false,
+        code: "GATEWAY_BUSY",
+        retryAfterMs: 7_000,
+        queueDepth: 1,
+        inLine: true,
+      });
+    });
+
+    it("treats a holder past the median as about to finish", async () => {
       const stub = keyPool();
       const start = await recordHolds(stub, [4_000, 6_000, 10_000, 12_000, 14_000]);
       await grantedLease(stub, "holder", start);
       const now = start + 11_000;
 
       const joined = [];
-      for (const requestId of ["a", "b", "c", "d"]) joined.push(await acquire(stub, requestId, now));
+      for (const requestId of ["a", "b", "c", "d", "e"]) {
+        joined.push(await acquire(stub, requestId, now));
+      }
 
       expect(joined).toEqual([
-        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 2_000, queueDepth: 1, inLine: true },
-        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 12_000, queueDepth: 2, inLine: true },
-        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 22_000, queueDepth: 3, inLine: true },
-        expect.objectContaining({ ok: false, code: "GATEWAY_BUSY", inLine: false, queueDepth: 3 }),
+        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 0, queueDepth: 1, inLine: true },
+        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 10_000, queueDepth: 2, inLine: true },
+        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 20_000, queueDepth: 3, inLine: true },
+        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 30_000, queueDepth: 4, inLine: true },
+        { ok: false, code: "GATEWAY_BUSY", retryAfterMs: 10_000, queueDepth: 4, inLine: false },
       ]);
     });
 
-    it("estimates a holder that has outrun every recorded hold at the median hold", async () => {
-      const stub = keyPool();
-      const start = await recordHolds(stub, [4_000, 6_000, 10_000, 12_000, 14_000]);
-      await grantedLease(stub, "holder", start);
-
-      await expect(acquire(stub, "a", start + 20_000)).resolves.toEqual({
-        ok: false,
-        code: "GATEWAY_BUSY",
-        retryAfterMs: 10_000,
-        queueDepth: 1,
-        inLine: true,
-      });
-    });
-
-    it("caps the estimate at the lease's remaining time", async () => {
-      const stub = keyPool();
-      const start = await recordHolds(stub, [20_000, 20_000, 20_000]);
-      await grantedLease(stub, "holder", start);
-
-      await expect(acquire(stub, "a", start + 55_000)).resolves.toEqual({
-        ok: false,
-        code: "GATEWAY_BUSY",
-        retryAfterMs: 5_000,
-        queueDepth: 1,
-        inLine: true,
-      });
-    });
-
-    it("estimates a lease from before grant times were recorded at the median hold", async () => {
+    it("treats a lease from before grant times were recorded as about to finish", async () => {
       const stub = keyPool();
       await stub.getStatus();
       const oldExpiry = BASE_TIME + 1_230_000;
@@ -195,7 +184,7 @@ describe("KeyPool admission against the caller's deadline", () => {
       await expect(acquire(stub, "a", BASE_TIME + 1_000)).resolves.toEqual({
         ok: false,
         code: "GATEWAY_BUSY",
-        retryAfterMs: 8_000,
+        retryAfterMs: 0,
         queueDepth: 1,
         inLine: true,
       });
@@ -274,6 +263,65 @@ describe("KeyPool admission against the caller's deadline", () => {
         inLine: true,
         queueDepth: 4,
       });
+    });
+
+    it("admits a returning refused caller once the holder has outrun every recorded hold", async () => {
+      const stub = keyPool();
+      let now = BASE_TIME;
+      for (let index = 0; index < 3; index += 1) {
+        const sample = await grantedLease(stub, `sample-${String(index)}`, now);
+        await succeed(stub, sample, now + 4_000);
+        now += 4_001;
+      }
+      const heldAt = now;
+      await grantedLease(stub, "holder", heldAt);
+      const waiters = ["w0", "w1", "w2", "w3", "w4", "w5", "w6"];
+      const waiterDeadline = heldAt + 100 + BUDGET_MS;
+      for (const pollAt of [heldAt + 100, heldAt + 3_000, heldAt + 6_000]) {
+        for (const requestId of waiters) {
+          await expect(acquire(stub, requestId, pollAt, waiterDeadline)).resolves.toMatchObject({
+            inLine: true,
+          });
+        }
+      }
+
+      const first = await acquire(stub, "newcomer", heldAt + 6_000);
+      if (first.ok) throw new Error("the holder is still running");
+      if (first.inLine) return;
+      if (first.retryAfterMs === null) throw new Error("expected a retry time");
+      const returnsAt = heldAt + 6_000 + first.retryAfterMs;
+      for (const requestId of waiters) await acquire(stub, requestId, returnsAt, waiterDeadline);
+      await expect(acquire(stub, "newcomer", returnsAt)).resolves.toMatchObject({ inLine: true });
+    });
+
+    it("counts a holder's estimate down at least as fast as the clock", async () => {
+      const stub = keyPool();
+      let now = BASE_TIME;
+      for (const [index, holdMs] of [4_000, 6_000, 10_000, 12_000, 14_000].entries()) {
+        const sample = await grantedLease(stub, `sample-${String(index)}`, now);
+        await succeed(stub, sample, now + holdMs);
+        now += holdMs + 1;
+      }
+      const heldAt = now;
+      await grantedLease(stub, "holder", heldAt);
+      const deadlineAt = heldAt + 100 + BUDGET_MS;
+
+      const quoted: { readonly at: number; readonly retryAfterMs: number }[] = [];
+      for (const elapsed of [100, 3_000, 6_000, 9_000, 11_900, 12_100, 14_500, 17_000]) {
+        const result = await acquire(stub, "head", heldAt + elapsed, deadlineAt);
+        if (result.ok || !result.inLine || result.retryAfterMs === null) {
+          throw new Error(`expected the head to stay in line: ${JSON.stringify(result)}`);
+        }
+        quoted.push({ at: elapsed, retryAfterMs: result.retryAfterMs });
+      }
+
+      for (const [index, later] of quoted.entries()) {
+        const earlier = quoted[index - 1];
+        if (earlier === undefined) continue;
+        expect(later.retryAfterMs).toBeLessThanOrEqual(
+          Math.max(0, earlier.retryAfterMs - (later.at - earlier.at)),
+        );
+      }
     });
 
     it("never tells a refused caller to come back in less than one second", async () => {
