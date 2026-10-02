@@ -88,7 +88,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const storedDefinitions = this.readStoredSlotDefinitions();
       assertAttemptedSlotIds(input.attemptedSlotIds, storedDefinitions);
       this.activateDueSlots(input.now);
-      const { isHead, isNew } = this.touchWaitlist(input.requestId, input.now);
+      const { isHead, isNew } = this.touchWaitlist(input.requestId, input.now, input.deadlineAt);
       const current = this.readLease();
       if (current !== null && current.expires_at > input.now) {
         const remainingMs = current.expires_at - input.now;
@@ -346,7 +346,13 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
   private touchWaitlist(
     requestId: string,
     now: number,
+    deadlineAt: number,
   ): { readonly isHead: boolean; readonly isNew: boolean } {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM waitlist WHERE deadline_at <= ? OR last_seen_at < ?",
+      now,
+      now - WAITLIST_STALE_AFTER_MS,
+    );
     const existing = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { ticket: number }>(
         "SELECT ticket FROM waitlist WHERE request_id = ?",
@@ -362,9 +368,10 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           )
           .one().ticket + 1;
       this.ctx.storage.sql.exec(
-        "INSERT INTO waitlist (request_id, ticket, last_seen_at) VALUES (?, ?, ?)",
+        "INSERT INTO waitlist (request_id, ticket, deadline_at, last_seen_at) VALUES (?, ?, ?, ?)",
         requestId,
         nextTicket,
+        deadlineAt,
         now,
       );
     } else {
@@ -374,10 +381,6 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         requestId,
       );
     }
-    this.ctx.storage.sql.exec(
-      "DELETE FROM waitlist WHERE last_seen_at < ?",
-      now - WAITLIST_STALE_AFTER_MS,
-    );
     const head = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { request_id: string }>(
         "SELECT request_id FROM waitlist ORDER BY ticket ASC LIMIT 1",
@@ -688,6 +691,9 @@ function assertAcquireLeaseInputShape(input: AcquireLeaseInput): void {
   }
   if (!Array.isArray(input.attemptedSlotIds)) {
     throw new Error("INVALID_ATTEMPTED_SLOTS");
+  }
+  if (typeof input.deadlineAt !== "number" || !Number.isFinite(input.deadlineAt)) {
+    throw new Error("INVALID_ACQUIRE_INPUT");
   }
 }
 

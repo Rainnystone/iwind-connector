@@ -39,6 +39,7 @@ const CREATE_WAITLIST = `
   CREATE TABLE IF NOT EXISTS waitlist (
     request_id TEXT PRIMARY KEY,
     ticket INTEGER NOT NULL,
+    deadline_at INTEGER,
     last_seen_at INTEGER NOT NULL
   )
 `;
@@ -185,6 +186,7 @@ function initializeLegacySchema(
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
     sql.exec(CREATE_WAITLIST);
+    ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_LEASE_HOLD);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
@@ -252,6 +254,7 @@ function initializeVersionedSchema(
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
     sql.exec(CREATE_WAITLIST);
+    ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_LEASE_HOLD);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
@@ -573,6 +576,17 @@ function validatePersistenceConfiguration(configuration: KeyPoolPersistenceConfi
   ) {
     throw new Error("INVALID_KEY_POOL_SCHEMA_MODE");
   }
+}
+
+function ensureColumn(sql: SqlStorage, table: string, column: string, type: string): void {
+  const present = sql
+    .exec<Record<string, SqlStorageValue> & { name: string }>(
+      "SELECT name FROM pragma_table_info(?)",
+      table,
+    )
+    .toArray()
+    .some(({ name }) => name === column);
+  if (!present) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 function readSchemaVersion(sql: SqlStorage): number {

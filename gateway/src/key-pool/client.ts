@@ -25,7 +25,12 @@ export async function acquireKeyPoolLease(
     }
     firstAttempt = false;
 
-    const result = await keyPool.acquireLease({ requestId, attemptedSlotIds, now });
+    const result = await keyPool.acquireLease({
+      requestId,
+      attemptedSlotIds,
+      now,
+      deadlineAt: deadline,
+    });
     if (result.ok || result.code === "KEY_POOL_EXHAUSTED") return result;
     retryAfterMs = result.retryAfterMs;
     queueDepth = result.queueDepth;

@@ -22,7 +22,7 @@ function acquireLease(
   now: number,
   attemptedSlotIds: readonly SlotId[] = [],
 ): Promise<AcquireLeaseResult> {
-  return stub.acquireLease({ requestId, attemptedSlotIds, now });
+  return stub.acquireLease({ requestId, attemptedSlotIds, now, deadlineAt: now + 30_000 });
 }
 
 afterEach(async () => {
@@ -233,6 +233,7 @@ describe("walk reservation", () => {
         requestId: "following-request",
         attemptedSlotIds: [],
         now: Date.now() + 5_001,
+        deadlineAt: Date.now() + 5_001 + 30_000,
       }),
     ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
   });
@@ -339,6 +340,7 @@ function contendingWaiters(stub: ReturnType<typeof primaryPool>): { stop: () => 
           requestId,
           attemptedSlotIds: [],
           now: Date.now(),
+          deadlineAt: Date.now() + 30_000,
         });
         if (!outcome.ok && outcome.code === "GATEWAY_BUSY") busyPolls += 1;
         if (outcome.ok) {

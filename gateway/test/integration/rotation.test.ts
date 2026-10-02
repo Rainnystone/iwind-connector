@@ -423,12 +423,14 @@ describe("local KeyPool integration", () => {
           requestId: "future-live-lease-overlap",
           attemptedSlotIds: [],
           now: FUTURE_BASE_TIME + 2,
+          deadlineAt: FUTURE_BASE_TIME + 2 + 30_000,
         }),
       ).resolves.toMatchObject({ ok: false, code: "GATEWAY_BUSY" });
       const acquired = await stub.acquireLease({
         requestId: "future-tail-acquire",
         attemptedSlotIds: [],
         now: FUTURE_BASE_TIME + 60_000,
+        deadlineAt: FUTURE_BASE_TIME + 60_000 + 30_000,
       });
       expect(acquired).toMatchObject({ ok: true, slotId: futureSlotId });
       if (!acquired.ok) throw new Error("fixture-future-tail-not-acquired");

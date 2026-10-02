@@ -42,7 +42,7 @@ function acquireLease(
   now: number,
   attemptedSlotIds: readonly SlotId[] = [],
 ): Promise<AcquireLeaseResult> {
-  return stub.acquireLease({ requestId, attemptedSlotIds, now });
+  return stub.acquireLease({ requestId, attemptedSlotIds, now, deadlineAt: now + 30_000 });
 }
 
 describe("KeyPool SQLite Durable Object", () => {
@@ -592,6 +592,7 @@ describe("KeyPool SQLite Durable Object", () => {
             requestId: "too-many-attempts",
             attemptedSlotIds: ["key-05", "key-04", "key-03", "key-02", "key-01", "key-05"],
             now: BASE_TIME + 2,
+            deadlineAt: BASE_TIME + 30_002,
           },
         ]),
       ),
@@ -736,6 +737,7 @@ describe("KeyPool SQLite Durable Object", () => {
       requestId: "ring-request-01",
       attemptedSlotIds: [],
       now: BASE_TIME,
+      deadlineAt: BASE_TIME + 30_000,
     });
     expect(first).toMatchObject({ ok: true, slotId: "key-01" });
     expect((await stub.getStatus()).currentSlotId).toBe("key-01");
@@ -752,6 +754,7 @@ describe("KeyPool SQLite Durable Object", () => {
       requestId: "ring-request-01",
       attemptedSlotIds: ["key-01"],
       now: BASE_TIME + 2,
+      deadlineAt: BASE_TIME + 2 + 30_000,
     });
     expect(second).toMatchObject({ ok: true, slotId: "key-02" });
     expect((await stub.getStatus()).currentSlotId).toBe("key-02");
@@ -769,6 +772,7 @@ describe("KeyPool SQLite Durable Object", () => {
         requestId: "ring-request-02",
         attemptedSlotIds: [],
         now: BASE_TIME + 4,
+        deadlineAt: BASE_TIME + 4 + 30_000,
       }),
     ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
     expect((await stub.getStatus()).currentSlotId).toBe("key-01");
@@ -783,14 +787,24 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(
       runInDurableObject(stub, (instance) =>
         Reflect.apply(instance.acquireLease, instance, [
-          { requestId: "invalid-duplicate", attemptedSlotIds: ["key-01", "key-01"], now: BASE_TIME },
+          {
+            requestId: "invalid-duplicate",
+            attemptedSlotIds: ["key-01", "key-01"],
+            now: BASE_TIME,
+            deadlineAt: BASE_TIME + 30_000,
+          },
         ]),
       ),
     ).rejects.toThrow("INVALID_ATTEMPTED_SLOTS");
     await expect(
       runInDurableObject(stub, (instance) =>
         Reflect.apply(instance.acquireLease, instance, [
-          { requestId: "invalid-unknown", attemptedSlotIds: ["key-03"], now: BASE_TIME },
+          {
+            requestId: "invalid-unknown",
+            attemptedSlotIds: ["key-03"],
+            now: BASE_TIME,
+            deadlineAt: BASE_TIME + 30_000,
+          },
         ]),
       ),
     ).rejects.toThrow("INVALID_ATTEMPTED_SLOTS");
@@ -1561,7 +1575,7 @@ describe("KeyPool SQLite Durable Object", () => {
       oauthReplay: ["marker_id", "kind", "expires_at"],
       schemaMigrations: ["version", "applied_at"],
       poolState: ["singleton", "cursor_slot_id", "updated_at"],
-      waitlist: ["request_id", "ticket", "last_seen_at"],
+      waitlist: ["request_id", "ticket", "deadline_at", "last_seen_at"],
     });
   });
 

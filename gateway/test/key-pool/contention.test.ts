@@ -12,7 +12,7 @@ function acquireLease(
   requestId: string,
   now: number,
 ): Promise<AcquireLeaseResult> {
-  return stub.acquireLease({ requestId, attemptedSlotIds: [], now });
+  return stub.acquireLease({ requestId, attemptedSlotIds: [], now, deadlineAt: now + 30_000 });
 }
 
 afterEach(async () => {

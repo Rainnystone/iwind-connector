@@ -7,6 +7,7 @@ export interface AcquireLeaseInput {
   readonly requestId: string;
   readonly attemptedSlotIds: readonly SlotId[];
   readonly now: number;
+  readonly deadlineAt: number;
 }
 
 export type SlotState =

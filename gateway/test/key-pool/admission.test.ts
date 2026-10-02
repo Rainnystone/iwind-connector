@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { reset } from "cloudflare:test";
+import { reset, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type {
@@ -88,4 +88,32 @@ describe("KeyPool admission against the caller's deadline", () => {
     await succeed(stub, b, BASE_TIME + 15_000);
     await grantedLease(stub, "c", BASE_TIME + 15_100, BASE_TIME + 100 + BUDGET_MS);
   });
+
+  it("drops a head waiter at its deadline so the next waiter is granted without a staleness gap", async () => {
+    const stub = keyPool();
+    const holder = await grantedLease(stub, "holder", BASE_TIME);
+    const shortDeadline = BASE_TIME + 3_000;
+    await acquire(stub, "gives-up", BASE_TIME + 100, shortDeadline);
+    await acquire(stub, "next", BASE_TIME + 200, BASE_TIME + 200 + BUDGET_MS);
+    await acquire(stub, "gives-up", BASE_TIME + 2_900, shortDeadline);
+    await succeed(stub, holder, BASE_TIME + 3_100);
+
+    await expect(
+      acquire(stub, "next", BASE_TIME + 3_200, BASE_TIME + 200 + BUDGET_MS),
+    ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects a non-finite deadline (%s)",
+    async (deadlineAt) => {
+      const stub = keyPool();
+      await expect(
+        runInDurableObject(stub, (instance) =>
+          Reflect.apply(instance.acquireLease, instance, [
+            { requestId: "caller", attemptedSlotIds: [], now: BASE_TIME, deadlineAt },
+          ]),
+        ),
+      ).rejects.toThrow("INVALID_ACQUIRE_INPUT");
+    },
+  );
 });
