@@ -1440,7 +1440,7 @@ describe("KeyPool SQLite Durable Object", () => {
     });
   });
 
-  it("keeps two full attempts and the retry delay inside a 60 second lease", async () => {
+  it("keeps two full attempts and the longest same-slot retry delay inside a 60 second lease", async () => {
     const stub = keyPool();
     const held = await acquireLease(stub, "live-holder", BASE_TIME);
 
@@ -1448,10 +1448,10 @@ describe("KeyPool SQLite Durable Object", () => {
       ok: true,
       expiresAt: BASE_TIME + 60_000,
     });
-    await expect(acquireLease(stub, "during-attempts", BASE_TIME + 50_500)).resolves.toEqual({
+    await expect(acquireLease(stub, "during-attempts", BASE_TIME + 55_000)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 8_000,
+      retryAfterMs: 5_000,
       queueDepth: 1,
       inLine: true,
     });
@@ -1462,7 +1462,7 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: held.slotId,
       category: "timeout",
       resetAt: null,
-      occurredAt: BASE_TIME + 50_500,
+      occurredAt: BASE_TIME + 55_000,
     });
 
     const status = await stub.getStatus();

@@ -15,6 +15,8 @@ import {
 const MAX_ERROR_ENVELOPE_BYTES = 16 * 1024;
 const HTTP_DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 const STOP: RetryDecision = { kind: "stop" };
+export const MAX_SAME_SLOT_RETRY_DELAY_MS = 5_000;
+
 const RETRY_ONCE_500: RetryDecision = { kind: "retry_same_slot", delayMs: 500, maxRetries: 1 };
 const RETRY_ONCE_3000: RetryDecision = { kind: "retry_same_slot", delayMs: 3000, maxRetries: 1 };
 
@@ -290,5 +292,5 @@ function isErrorLike(value: unknown): boolean {
 }
 
 function inRetryRange(delayMs: number): boolean {
-  return Number.isFinite(delayMs) && delayMs >= 0 && delayMs <= 5000;
+  return Number.isFinite(delayMs) && delayMs >= 0 && delayMs <= MAX_SAME_SLOT_RETRY_DELAY_MS;
 }
