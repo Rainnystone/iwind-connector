@@ -412,6 +412,115 @@ describe("Wind invocation state machine", () => {
     expect(serialized).not.toContain("600519.SH");
   });
 
+  it("rounds a known GATEWAY_BUSY retry up to whole seconds in the failure text", async () => {
+    const pool = scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_001 }]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, scriptedCaller([])));
+
+    expect(result.toolResult).toEqual({
+      isError: true,
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 2s." }],
+    });
+    expect(result.notice).toEqual({
+      schemaVersion: 1,
+      code: "GATEWAY_BUSY",
+      initialCategory: null,
+      finalStatus: "failed",
+      requestId: "request-01",
+    });
+    expect(JSON.stringify(result)).not.toContain("argument-must-not-be-logged");
+    expect(JSON.stringify(result)).not.toContain("600519.SH");
+  });
+
+  it("keeps an exact second and leaves other failure text unchanged", async () => {
+    const exact = await invokeWindTool(
+      REQUEST,
+      dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_000 }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(exact.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 1s." }],
+    });
+
+    const unknownRetry = await invokeWindTool(
+      { ...REQUEST, requestId: "request-02" },
+      dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: null }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(unknownRetry.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY)." }],
+    });
+
+    const exhausted = await invokeWindTool(
+      { ...REQUEST, requestId: "request-03" },
+      dependencies(
+        scriptedPool([{ ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: 5_000 }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(exhausted.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (KEY_POOL_EXHAUSTED)." }],
+    });
+  });
+
+  it("logs integer queue wait and depth on busy and successful tool lines", async () => {
+    const busyLines: string[] = [];
+    const busy = await invokeWindTool(REQUEST, {
+      ...dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_001, queueDepth: 4 }]),
+        scriptedCaller([]),
+      ),
+      log: (event) => emitLogEvent(event, (line) => busyLines.push(line)),
+    });
+
+    expect(busy.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 2s." }],
+    });
+    const busyLog = JSON.parse(busyLines[0] ?? "") as {
+      queueWaitMs: unknown;
+      queueDepth: unknown;
+      slotId: unknown;
+    };
+    expect(busyLog).toMatchObject({
+      slotId: null,
+      status: "GATEWAY_BUSY",
+      queueWaitMs: 0,
+      queueDepth: 4,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
+      responseBytes: null,
+    });
+    expect(Number.isInteger(busyLog.queueWaitMs)).toBe(true);
+    expect(Number.isInteger(busyLog.queueDepth)).toBe(true);
+    expect(busyLines.join("\n")).not.toContain("argument-must-not-be-logged");
+    expect(busyLines.join("\n")).not.toContain("600519.SH");
+
+    const successLines: string[] = [];
+    await invokeWindTool(
+      { ...REQUEST, requestId: "request-02" },
+      {
+        ...dependencies(scriptedPool([lease("key-01", "lease-01")]), scriptedCaller([SUCCESS])),
+        log: (event) => emitLogEvent(event, (line) => successLines.push(line)),
+      },
+    );
+    const successLog = JSON.parse(successLines[0] ?? "") as {
+      queueWaitMs: unknown;
+      queueDepth: unknown;
+    };
+    expect(successLog).toMatchObject({
+      slotId: "key-01",
+      status: "success",
+      queueWaitMs: 0,
+      queueDepth: 0,
+    });
+    expect(Number.isInteger(successLog.queueWaitMs)).toBe(true);
+    expect(Number.isInteger(successLog.queueDepth)).toBe(true);
+  });
+
   it.each(["GATEWAY_BUSY", "KEY_POOL_EXHAUSTED"] as const)(
     "returns stable %s without calling Wind",
     async (code) => {
@@ -795,6 +904,8 @@ describe("Wind invocation state machine", () => {
       "domain",
       "durationMs",
       "noticeCode",
+      "queueDepth",
+      "queueWaitMs",
       "requestId",
       "responseBytes",
       "slotId",
@@ -881,7 +992,15 @@ describe("Wind invocation state machine", () => {
       ),
     ]);
 
-    expect(results.every((result) => result.toolResult === SUCCESS)).toBe(true);
+    const succeeded = results.filter((result) => result.toolResult === SUCCESS);
+    const refused = results.filter((result) => result.toolResult !== SUCCESS);
+    expect(succeeded).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]?.toolResult.isError).toBe(true);
+    const refusedText = refused[0]?.toolResult.content.find((block) => block.type === "text");
+    expect(refusedText && "text" in refusedText ? refusedText.text : "").toMatch(
+      /^iWind request failed \(GATEWAY_BUSY\)\. Retry after \d+s\.$/,
+    );
     expect(maxInFlight).toBe(1);
   });
 
@@ -1183,7 +1302,7 @@ function scriptedPool(
       acquisitions.push({ requestId, attemptedSlotIds: [...attemptedSlotIds] });
       const outcome = remaining.shift();
       return (
-        outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null }
+        outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null, queueDepth: 0 }
       );
     },
     async report(outcome) {
@@ -1217,7 +1336,7 @@ function scriptedCaller(outcomes: readonly (CallToolResult | Error)[]): Scripted
 }
 
 function lease(slotId: SlotId, leaseId: string): AcquireLeaseResult {
-  return { ok: true, slotId, leaseId, expiresAt: NOW + 1_230_000 };
+  return { ok: true, slotId, leaseId, expiresAt: NOW + 1_230_000, queueDepth: 0 };
 }
 
 function report(

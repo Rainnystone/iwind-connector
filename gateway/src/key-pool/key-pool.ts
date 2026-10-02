@@ -23,6 +23,8 @@ import type {
 export const LEASE_TTL_MS = 1_230_000;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
 const WAITLIST_STALE_AFTER_MS = 1_000;
+const ADMIT_BUDGET_MS = 30_000;
+const DEFAULT_HOLD_MS = 8_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -79,14 +81,22 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const isHead = this.touchWaitlist(input.requestId, input.now);
       const current = this.readLease();
       if (current !== null && current.expires_at > input.now) {
-        return {
-          ok: false,
-          code: "GATEWAY_BUSY",
-          retryAfterMs: current.expires_at - input.now,
-        };
+        const remainingMs = current.expires_at - input.now;
+        const retryAfterMs =
+          remainingMs + this.callersAhead(input.requestId) * this.medianHoldMs();
+        if (retryAfterMs > ADMIT_BUDGET_MS) {
+          this.deleteWaitlistRow(input.requestId);
+          return this.busy(retryAfterMs);
+        }
+        return this.busy(remainingMs);
       }
       if (!isHead) {
-        return { ok: false, code: "GATEWAY_BUSY", retryAfterMs: null };
+        const retryAfterMs = this.callersAhead(input.requestId) * this.medianHoldMs();
+        if (retryAfterMs > ADMIT_BUDGET_MS) {
+          this.deleteWaitlistRow(input.requestId);
+          return this.busy(retryAfterMs);
+        }
+        return this.busy(null);
       }
       if (current !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
 
@@ -100,14 +110,14 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       );
       const cursorSlot = slots[0];
       if (cursorSlot?.state === "cooldown") {
-        return {
-          ok: false,
-          code: "GATEWAY_BUSY",
-          retryAfterMs:
-            cursorSlot.cooldown_until === null
-              ? null
-              : Math.max(0, cursorSlot.cooldown_until - input.now),
-        };
+        const retryAfterMs =
+          cursorSlot.cooldown_until === null
+            ? null
+            : Math.max(0, cursorSlot.cooldown_until - input.now);
+        if (retryAfterMs !== null && retryAfterMs > ADMIT_BUDGET_MS) {
+          this.deleteWaitlistRow(input.requestId);
+        }
+        return this.busy(retryAfterMs);
       }
       const slot = slots.find(
         (candidate) =>
@@ -120,10 +130,12 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           ok: false,
           code: "KEY_POOL_EXHAUSTED",
           retryAfterMs: next === null ? null : Math.max(0, next - input.now),
+          queueDepth: this.waitlistDepth(),
         };
       }
 
       this.deleteWaitlistRow(input.requestId);
+      const queueDepth = this.waitlistDepth();
       const leaseId = crypto.randomUUID();
       const expiresAt = input.now + LEASE_TTL_MS;
       const slotId = this.asPersistedSlotId(slot.slot_id);
@@ -135,7 +147,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         slot.slot_id,
         expiresAt,
       );
-      return { ok: true, leaseId, slotId, expiresAt };
+      return { ok: true, leaseId, slotId, expiresAt, queueDepth };
     });
 
     await this.syncNextAlarm();
@@ -170,6 +182,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         input.occurredAt,
         input.slotId,
       );
+      this.recordHold(input.occurredAt - (lease.expires_at - LEASE_TTL_MS));
       this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
       if (transition.advanceCursor) {
         this.advanceCursorIfCurrent(input.slotId, input.occurredAt);
@@ -339,8 +352,69 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     return head.request_id === requestId;
   }
 
+  private busy(retryAfterMs: number | null): AcquireLeaseResult {
+    return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth: this.waitlistDepth() };
+  }
+
+  private waitlistDepth(): number {
+    return this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { count: number }>(
+        "SELECT COUNT(*) AS count FROM waitlist",
+      )
+      .one().count;
+  }
+
   private deleteWaitlistRow(requestId: string): void {
     this.ctx.storage.sql.exec("DELETE FROM waitlist WHERE request_id = ?", requestId);
+  }
+
+  private recordHold(durationMs: number): void {
+    if (!Number.isSafeInteger(durationMs) || durationMs < 0) return;
+    this.ctx.storage.sql.exec("INSERT INTO lease_hold (duration_ms) VALUES (?)", durationMs);
+    this.ctx.storage.sql.exec(
+      `DELETE FROM lease_hold WHERE id NOT IN (
+         SELECT id FROM lease_hold ORDER BY id DESC LIMIT 16
+       )`,
+    );
+  }
+
+  private medianHoldMs(): number {
+    const samples = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { duration_ms: number }>(
+        "SELECT duration_ms FROM lease_hold",
+      )
+      .toArray()
+      .map((row) => row.duration_ms)
+      .sort((left, right) => left - right);
+    if (samples.length === 0) return DEFAULT_HOLD_MS;
+    const mid = Math.floor(samples.length / 2);
+    const upper = samples[mid];
+    if (upper === undefined) return DEFAULT_HOLD_MS;
+    if (samples.length % 2 === 1) return upper;
+    const lower = samples[mid - 1];
+    return lower === undefined ? upper : Math.round((lower + upper) / 2);
+  }
+
+  private callersAhead(requestId: string): number {
+    const existing = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { ticket: number }>(
+        "SELECT ticket FROM waitlist WHERE request_id = ?",
+        requestId,
+      )
+      .toArray()[0];
+    if (existing === undefined) {
+      return this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          "SELECT COUNT(*) AS count FROM waitlist",
+        )
+        .one().count;
+    }
+    return this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { count: number }>(
+        "SELECT COUNT(*) AS count FROM waitlist WHERE ticket < ?",
+        existing.ticket,
+      )
+      .one().count;
   }
 
   private readLease(): LeaseRow | null {

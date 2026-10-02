@@ -1031,6 +1031,180 @@ describe("KeyPool SQLite Durable Object", () => {
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 1_229_999,
+      queueDepth: 0,
+    });
+  });
+
+  it("refuses an overflowing caller on one acquire and does not keep their place in line", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    const observedAt = BASE_TIME + 1_230_000 - 40_000;
+
+    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 40_000,
+      queueDepth: 0,
+    });
+
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: observedAt,
+    });
+
+    await expect(acquireLease(stub, "next", observedAt + 1)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+  });
+
+  it("uses 8s per caller ahead when no hold has been recorded", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    const observedAt = BASE_TIME + 1_230_000 - 10_000;
+
+    await expect(acquireLease(stub, "waiter-a", observedAt)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", observedAt)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-c", observedAt)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 34_000,
+      queueDepth: 3,
+    });
+
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: observedAt,
+    });
+    const grantedA = await acquireLease(stub, "waiter-a", observedAt + 1);
+    expect(grantedA).toMatchObject({ ok: true, slotId: "key-01" });
+    if (!grantedA.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: grantedA.leaseId,
+      slotId: grantedA.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: observedAt + 2,
+    });
+    const grantedB = await acquireLease(stub, "waiter-b", observedAt + 3);
+    expect(grantedB).toMatchObject({ ok: true, slotId: "key-01" });
+    if (!grantedB.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: grantedB.leaseId,
+      slotId: grantedB.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: observedAt + 4,
+    });
+    const grantedC = await acquireLease(stub, "waiter-c", observedAt + 5);
+    expect(grantedC).toMatchObject({ ok: true, slotId: "key-01" });
+    if (!grantedC.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: grantedC.leaseId,
+      slotId: grantedC.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: observedAt + 6,
+    });
+
+    await expect(acquireLease(stub, "after-line", observedAt + 7)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+  });
+
+  it("uses the median recorded hold instead of 8s once a lease has been reported", async () => {
+    const stub = keyPool();
+    const sample = await acquireLease(stub, "sample", BASE_TIME);
+    if (!sample.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: sample.leaseId,
+      slotId: sample.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 12_000,
+    });
+
+    const heldAt = BASE_TIME + 12_001;
+    const holder = await acquireLease(stub, "holder", heldAt);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    const observedAt = heldAt + 1_230_000 - 10_000;
+    await acquireLease(stub, "waiter-a", observedAt);
+    await acquireLease(stub, "waiter-b", observedAt);
+
+    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 34_000,
+      queueDepth: 2,
+    });
+  });
+
+  it("estimates from the median of the last 16 holds and forgets the older one", async () => {
+    const stub = keyPool();
+    let now = BASE_TIME;
+    const durations = [1_000, ...Array<number>(8).fill(2_000), ...Array<number>(8).fill(8_000)];
+    for (const [index, duration] of durations.entries()) {
+      const sample = await acquireLease(stub, `sample-${String(index)}`, now);
+      if (!sample.ok) throw new Error("fixture-lease-not-acquired");
+      now += duration;
+      await stub.reportOutcome({
+        leaseId: sample.leaseId,
+        slotId: sample.slotId,
+        category: "success",
+        resetAt: null,
+        occurredAt: now,
+      });
+    }
+
+    const heldAt = now + 1;
+    const holder = await acquireLease(stub, "holder", heldAt);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    const observedAt = heldAt + 1_230_000 - 20_000;
+    await acquireLease(stub, "waiter-a", observedAt);
+    await acquireLease(stub, "waiter-b", observedAt);
+    await acquireLease(stub, "waiter-c", observedAt);
+
+    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 35_000,
+      queueDepth: 3,
+    });
+  });
+
+  it("keeps a caller whose estimated wait is exactly 30s", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    const observedAt = BASE_TIME + 1_230_000 - 6_000;
+    await acquireLease(stub, "waiter-a", observedAt);
+    await acquireLease(stub, "waiter-b", observedAt);
+    await acquireLease(stub, "waiter-c", observedAt);
+
+    await expect(acquireLease(stub, "boundary", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 6_000,
+      queueDepth: 4,
     });
   });
 
@@ -1039,15 +1213,20 @@ describe("KeyPool SQLite Durable Object", () => {
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
 
-    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 1)).resolves.toMatchObject({
+    const arrive = BASE_TIME + 1_230_000 - 10_000;
+    await expect(acquireLease(stub, "waiter-a", arrive)).resolves.toMatchObject({
       ok: false,
       code: "GATEWAY_BUSY",
     });
-    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 2)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-b", arrive + 1)).resolves.toMatchObject({
       ok: false,
       code: "GATEWAY_BUSY",
     });
-    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 3)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-c", arrive + 2)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", arrive + 3)).resolves.toMatchObject({
       ok: false,
       code: "GATEWAY_BUSY",
     });
@@ -1057,14 +1236,10 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: holder.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 4,
+      occurredAt: arrive + 4,
     });
 
-    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 5)).resolves.toMatchObject({
-      ok: false,
-      code: "GATEWAY_BUSY",
-    });
-    const grantedA = await acquireLease(stub, "waiter-a", BASE_TIME + 6);
+    const grantedA = await acquireLease(stub, "waiter-a", arrive + 5);
     expect(grantedA).toMatchObject({ ok: true, slotId: "key-01" });
     expect((await stub.getStatus()).currentSlotId).toBe("key-01");
     if (!grantedA.ok) throw new Error("fixture-lease-not-acquired");
@@ -1074,14 +1249,10 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: grantedA.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 7,
+      occurredAt: arrive + 6,
     });
 
-    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 8)).resolves.toMatchObject({
-      ok: false,
-      code: "GATEWAY_BUSY",
-    });
-    const grantedB = await acquireLease(stub, "waiter-b", BASE_TIME + 9);
+    const grantedB = await acquireLease(stub, "waiter-b", arrive + 7);
     expect(grantedB).toMatchObject({ ok: true, slotId: "key-01" });
     if (!grantedB.ok) throw new Error("fixture-lease-not-acquired");
 
@@ -1090,10 +1261,10 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: grantedB.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 10,
+      occurredAt: arrive + 8,
     });
 
-    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 11)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-c", arrive + 9)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
     });
@@ -1104,21 +1275,22 @@ describe("KeyPool SQLite Durable Object", () => {
     const stub = keyPool();
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    await acquireLease(stub, "waiter-a", BASE_TIME + 1);
-    await acquireLease(stub, "waiter-b", BASE_TIME + 2);
+    const arrive = BASE_TIME + 1_230_000 - 5_000;
+    await acquireLease(stub, "waiter-a", arrive);
+    await acquireLease(stub, "waiter-b", arrive + 1);
     await stub.reportOutcome({
       leaseId: holder.leaseId,
       slotId: holder.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 3,
+      occurredAt: arrive + 2,
     });
 
-    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_001)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-b", arrive + 1_000)).resolves.toMatchObject({
       ok: false,
       code: "GATEWAY_BUSY",
     });
-    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_002)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-b", arrive + 1_001)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
     });
@@ -1129,11 +1301,12 @@ describe("KeyPool SQLite Durable Object", () => {
     const stub = keyPool();
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    await acquireLease(stub, "waiter-a", BASE_TIME);
-    await acquireLease(stub, "waiter-b", BASE_TIME + 10);
+    const arrive = BASE_TIME + 1_230_000 - 10_000;
+    await acquireLease(stub, "waiter-a", arrive);
+    await acquireLease(stub, "waiter-b", arrive + 10);
 
     for (const seenAt of [250, 500, 750, 1_000, 1_250]) {
-      await expect(acquireLease(stub, "waiter-a", BASE_TIME + seenAt)).resolves.toMatchObject({
+      await expect(acquireLease(stub, "waiter-a", arrive + seenAt)).resolves.toMatchObject({
         ok: false,
         code: "GATEWAY_BUSY",
       });
@@ -1144,14 +1317,14 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: holder.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 1_251,
+      occurredAt: arrive + 1_251,
     });
 
-    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_252)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-b", arrive + 1_252)).resolves.toMatchObject({
       ok: false,
       code: "GATEWAY_BUSY",
     });
-    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 1_253)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-a", arrive + 1_253)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
     });
@@ -1161,23 +1334,25 @@ describe("KeyPool SQLite Durable Object", () => {
     const stub = keyPool();
     const holder = await acquireLease(stub, "holder", BASE_TIME);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    await acquireLease(stub, "waiter-a", BASE_TIME + 1);
+    const arrive = BASE_TIME + 1_230_000 - 10_000;
+    await acquireLease(stub, "waiter-a", arrive);
     await stub.reportOutcome({
       leaseId: holder.leaseId,
       slotId: holder.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: BASE_TIME + 2,
+      occurredAt: arrive + 1,
     });
 
     await expect(
-      acquireLease(stub, "exhausted-behind", BASE_TIME + 3, ["key-01", "key-02"]),
+      acquireLease(stub, "exhausted-behind", arrive + 2, ["key-01", "key-02"]),
     ).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: null,
+      retryAfterMs: 1_220_001,
+      queueDepth: 1,
     });
-    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 4)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "waiter-a", arrive + 3)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
     });
@@ -1209,6 +1384,7 @@ describe("KeyPool SQLite Durable Object", () => {
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 1_229_999,
+      queueDepth: 0,
     });
   });
 
@@ -1428,10 +1604,72 @@ describe("KeyPool SQLite Durable Object", () => {
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 4_998,
+      queueDepth: 1,
     });
     await expect(acquireLease(stub, "after-cooldown", BASE_TIME + 5_000)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
+    });
+  });
+
+  it("returns a cursor cooldown longer than 30s as the retry time and does not keep that caller", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "qps",
+      resetAt: BASE_TIME + 45_000,
+      occurredAt: BASE_TIME + 1,
+    });
+
+    const observedAt = BASE_TIME + 1_000;
+    await expect(acquireLease(stub, "caller-a", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 44_000,
+      queueDepth: 0,
+    });
+    await expect(acquireLease(stub, "caller-b", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 44_000,
+      queueDepth: 0,
+    });
+  });
+
+  it("refuses a caller who is too far back once the median hold makes the wait exceed 30s", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "qps",
+      resetAt: BASE_TIME + 13_000,
+      occurredAt: BASE_TIME + 8_000,
+    });
+
+    const observedAt = BASE_TIME + 8_000;
+    for (const requestId of ["waiter-a", "waiter-b", "waiter-c", "waiter-d"]) {
+      await expect(acquireLease(stub, requestId, observedAt)).resolves.toMatchObject({
+        ok: false,
+        code: "GATEWAY_BUSY",
+      });
+    }
+
+    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 32_000,
+      queueDepth: 4,
+    });
+    await expect(acquireLease(stub, "tail", observedAt)).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 32_000,
+      queueDepth: 4,
     });
   });
 
@@ -1494,7 +1732,12 @@ describe("KeyPool SQLite Durable Object", () => {
 
     await expect(
       acquireLease(stub, "request-01", BASE_TIME + 4, ["key-01", "key-02"]),
-    ).resolves.toEqual({ ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null });
+    ).resolves.toEqual({
+      ok: false,
+      code: "KEY_POOL_EXHAUSTED",
+      retryAfterMs: null,
+      queueDepth: 0,
+    });
     await expect(acquireLease(stub, "request-02", BASE_TIME + 5)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
