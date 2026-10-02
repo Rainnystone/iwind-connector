@@ -1404,7 +1404,7 @@ describe("KeyPool SQLite Durable Object", () => {
       queueDepth: 1,
     });
 
-    const replacement = await acquireLease(stub, "next-holder", BASE_TIME + 60_000);
+    const replacement = await acquireLease(stub, "too-soon", BASE_TIME + 60_000);
     expect(replacement).toMatchObject({
       ok: true,
       slotId: "key-01",
