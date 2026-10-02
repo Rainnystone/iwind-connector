@@ -103,6 +103,27 @@ describe("KeyPool admission against the caller's deadline", () => {
     ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
   });
 
+  it("tells a caller explicitly whether it is in line or refused", async () => {
+    const stub = keyPool();
+    await grantedLease(stub, "holder", BASE_TIME);
+
+    await expect(acquire(stub, "waiter", BASE_TIME + 100)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      inLine: true,
+    });
+    await expect(
+      acquire(stub, "too-late", BASE_TIME + 100, BASE_TIME + 1_000),
+    ).resolves.toMatchObject({ ok: false, code: "GATEWAY_BUSY", inLine: false });
+  });
+
+  it("reports KEY_POOL_EXHAUSTED as not in line", async () => {
+    const stub = keyPool();
+    await expect(
+      acquire(stub, "walker", BASE_TIME, BASE_TIME + BUDGET_MS, ["key-01", "key-02"]),
+    ).resolves.toMatchObject({ ok: false, code: "KEY_POOL_EXHAUSTED", inLine: false });
+  });
+
   it.each([Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects a non-finite deadline (%s)",
     async (deadlineAt) => {

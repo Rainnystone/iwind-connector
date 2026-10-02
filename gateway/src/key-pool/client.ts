@@ -21,7 +21,7 @@ export async function acquireKeyPoolLease(
   while (true) {
     const now = Date.now();
     if (!firstAttempt && now >= deadline) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth, inLine: false };
     }
     firstAttempt = false;
 
@@ -31,14 +31,13 @@ export async function acquireKeyPoolLease(
       now,
       deadlineAt: deadline,
     });
-    if (result.ok || result.code === "KEY_POOL_EXHAUSTED") return result;
+    if (result.ok || !result.inLine) return result;
     retryAfterMs = result.retryAfterMs;
     queueDepth = result.queueDepth;
-    if (retryAfterMs !== null && retryAfterMs > ACQUIRE_WAIT_MS) return result;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth, inLine: false };
     }
     await wait(Math.min(ACQUIRE_POLL_MS, remainingMs));
   }

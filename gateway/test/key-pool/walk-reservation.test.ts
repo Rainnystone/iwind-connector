@@ -54,12 +54,14 @@ describe("walk reservation", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: RESERVATION_MS - 1,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + 2)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: RESERVATION_MS - 2,
       queueDepth: 2,
+      inLine: true,
     });
 
     const next = await acquireLease(stub, "walker", reportedAt + 3, ["key-01"]);
@@ -94,12 +96,14 @@ describe("walk reservation", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 1,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + RESERVATION_MS)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 10,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-a", reportedAt + RESERVATION_MS)).resolves.toMatchObject({
       ok: true,
@@ -129,12 +133,14 @@ describe("walk reservation", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: RESERVATION_MS - 50,
       queueDepth: 1,
+      inLine: true,
     });
     await expect(acquireLease(stub, "stranger", reportedAt + 60)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: RESERVATION_MS - 60,
       queueDepth: 2,
+      inLine: true,
     });
 
     const next = await acquireLease(stub, "walker", reportedAt + 70, ["key-01"]);

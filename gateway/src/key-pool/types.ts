@@ -31,6 +31,7 @@ export type AcquireLeaseResult =
       readonly code: "GATEWAY_BUSY" | "KEY_POOL_EXHAUSTED";
       readonly retryAfterMs: number | null;
       readonly queueDepth: number;
+      readonly inLine: boolean;
     };
 
 export interface ReportOutcomeInput {

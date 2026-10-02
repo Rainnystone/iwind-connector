@@ -1046,6 +1046,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 7_999,
       queueDepth: 1,
+      inLine: true,
     });
   });
 
@@ -1069,6 +1070,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 40_000,
       queueDepth: 0,
+      inLine: false,
     });
 
     await stub.reportOutcome({
@@ -1108,6 +1110,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 34_000,
       queueDepth: 3,
+      inLine: false,
     });
 
     await stub.reportOutcome({
@@ -1177,6 +1180,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 32_000,
       queueDepth: 3,
+      inLine: false,
     });
   });
 
@@ -1204,6 +1208,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 34_000,
       queueDepth: 2,
+      inLine: false,
     });
   });
 
@@ -1237,6 +1242,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 35_000,
       queueDepth: 3,
+      inLine: false,
     });
   });
 
@@ -1254,6 +1260,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 6_000,
       queueDepth: 4,
+      inLine: true,
     });
   });
 
@@ -1425,6 +1432,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 50_001,
       queueDepth: 1,
+      inLine: false,
     });
     await expect(acquireLease(stub, "waiter-a", arrive + 3)).resolves.toMatchObject({
       ok: true,
@@ -1445,6 +1453,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 9_500,
       queueDepth: 1,
+      inLine: true,
     });
     if (!held.ok) throw new Error("fixture-lease-not-acquired");
 
@@ -1476,6 +1485,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 1,
       queueDepth: 1,
+      inLine: true,
     });
 
     const replacement = await acquireLease(stub, "too-soon", BASE_TIME + 60_000);
@@ -1514,6 +1524,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 7_999,
       queueDepth: 1,
+      inLine: true,
     });
   });
 
@@ -1734,6 +1745,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 4_998,
       queueDepth: 1,
+      inLine: true,
     });
     await expect(acquireLease(stub, "after-cooldown", BASE_TIME + 5_003)).resolves.toMatchObject({
       ok: true,
@@ -1759,12 +1771,14 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 44_000,
       queueDepth: 0,
+      inLine: false,
     });
     await expect(acquireLease(stub, "caller-b", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 44_000,
       queueDepth: 0,
+      inLine: false,
     });
   });
 
@@ -1790,6 +1804,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 33_000,
       queueDepth: 1,
+      inLine: false,
     });
   });
 
@@ -1818,12 +1833,14 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 37_000,
       queueDepth: 4,
+      inLine: false,
     });
     await expect(acquireLease(stub, "tail", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 37_000,
       queueDepth: 4,
+      inLine: false,
     });
   });
 
@@ -1891,6 +1908,7 @@ describe("KeyPool SQLite Durable Object", () => {
       code: "KEY_POOL_EXHAUSTED",
       retryAfterMs: null,
       queueDepth: 0,
+      inLine: false,
     });
     await expect(acquireLease(stub, "request-02", BASE_TIME + 5)).resolves.toMatchObject({
       ok: true,

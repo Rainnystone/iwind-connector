@@ -94,9 +94,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         const remainingMs = current.expires_at - input.now;
         const elapsedMs = input.now - (current.expires_at - LEASE_TTL_MS);
         const projectedMs = this.projectedWaitMs(input.requestId, remainingMs, elapsedMs);
-        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs, input.deadlineAt - input.now);
         if (refused !== null) return refused;
-        return this.busy(this.inLineRetryMs(remainingMs, projectedMs));
+        return this.busy(this.inLineRetryMs(remainingMs, projectedMs), true);
       }
       const reservation = this.readLiveReservation(input.now);
       const holdsReservation =
@@ -105,17 +105,17 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         const remainingMs = reservation.expires_at - input.now;
         const projectedMs =
           remainingMs + this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs, input.deadlineAt - input.now);
         if (refused !== null) return refused;
-        return this.busy(remainingMs);
+        return this.busy(remainingMs, true);
       }
       if (!holdsReservation && !isHead) {
         const projectedMs =
           this.cursorCooldownRemainingMs(input.now) +
           this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs, input.deadlineAt - input.now);
         if (refused !== null) return refused;
-        return this.busy(projectedMs > 0 ? projectedMs : null);
+        return this.busy(projectedMs > 0 ? projectedMs : null, true);
       }
       if (holdsReservation) {
         this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
@@ -138,8 +138,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
             : Math.max(0, cursorSlot.cooldown_until - input.now);
         if (retryAfterMs !== null && retryAfterMs > ADMIT_BUDGET_MS) {
           this.deleteWaitlistRow(input.requestId);
+          return this.busy(retryAfterMs, false);
         }
-        return this.busy(retryAfterMs);
+        return this.busy(retryAfterMs, true);
       }
       const slot = slots.find(
         (candidate) =>
@@ -153,6 +154,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           code: "KEY_POOL_EXHAUSTED",
           retryAfterMs: next === null ? null : Math.max(0, next - input.now),
           queueDepth: this.waitlistDepth(),
+          inLine: false,
         };
       }
 
@@ -411,14 +413,21 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     requestId: string,
     isNew: boolean,
     projectedMs: number,
+    budgetMs: number,
   ): AcquireLeaseResult | null {
-    if (!isNew || projectedMs <= ADMIT_BUDGET_MS) return null;
+    if (!isNew || projectedMs <= budgetMs) return null;
     this.deleteWaitlistRow(requestId);
-    return this.busy(projectedMs);
+    return this.busy(projectedMs, false);
   }
 
-  private busy(retryAfterMs: number | null): AcquireLeaseResult {
-    return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth: this.waitlistDepth() };
+  private busy(retryAfterMs: number | null, inLine: boolean): AcquireLeaseResult {
+    return {
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs,
+      queueDepth: this.waitlistDepth(),
+      inLine,
+    };
   }
 
   private waitlistDepth(): number {
