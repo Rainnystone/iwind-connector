@@ -1,8 +1,8 @@
 import type { AcquireLeaseResult, SlotId } from "./types";
 import { LEGACY_KEY_POOL_LAYOUT_ID, getKeyPoolConfiguration } from "./slots";
 
-const ACQUIRE_WAIT_MS = 2_000;
-const ACQUIRE_POLL_MS = 100;
+const ACQUIRE_WAIT_MS = 30_000;
+const ACQUIRE_POLL_MS = 250;
 
 type KeyPoolEnvironment = Pick<Cloudflare.Env, "KEY_POOL">;
 
@@ -15,20 +15,22 @@ export async function acquireKeyPoolLease(
   const keyPool = env.KEY_POOL.getByName(objectName);
   const deadline = Date.now() + ACQUIRE_WAIT_MS;
   let firstAttempt = true;
+  let retryAfterMs: number | null = null;
 
   while (true) {
     const now = Date.now();
     if (!firstAttempt && now >= deadline) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs: null };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs };
     }
     firstAttempt = false;
 
     const result = await keyPool.acquireLease({ requestId, attemptedSlotIds, now });
     if (result.ok || result.code === "KEY_POOL_EXHAUSTED") return result;
+    retryAfterMs = result.retryAfterMs;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs: null };
+      return { ok: false, code: "GATEWAY_BUSY", retryAfterMs };
     }
     await wait(Math.min(ACQUIRE_POLL_MS, remainingMs));
   }
