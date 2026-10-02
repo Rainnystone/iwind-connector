@@ -88,13 +88,13 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const storedDefinitions = this.readStoredSlotDefinitions();
       assertAttemptedSlotIds(input.attemptedSlotIds, storedDefinitions);
       this.activateDueSlots(input.now);
-      const isHead = this.touchWaitlist(input.requestId, input.now);
+      const { isHead, isNew } = this.touchWaitlist(input.requestId, input.now);
       const current = this.readLease();
       if (current !== null && current.expires_at > input.now) {
         const remainingMs = current.expires_at - input.now;
         const elapsedMs = input.now - (current.expires_at - LEASE_TTL_MS);
         const projectedMs = this.projectedWaitMs(input.requestId, remainingMs, elapsedMs);
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
         if (refused !== null) return refused;
         return this.busy(this.inLineRetryMs(remainingMs, projectedMs));
       }
@@ -105,7 +105,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         const remainingMs = reservation.expires_at - input.now;
         const projectedMs =
           remainingMs + this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
         if (refused !== null) return refused;
         return this.busy(remainingMs);
       }
@@ -113,7 +113,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         const projectedMs =
           this.cursorCooldownRemainingMs(input.now) +
           this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
+        const refused = this.refuseIfOverBudget(input.requestId, isNew, projectedMs);
         if (refused !== null) return refused;
         return this.busy(projectedMs > 0 ? projectedMs : null);
       }
@@ -343,13 +343,17 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     await this.syncNextAlarm();
   }
 
-  private touchWaitlist(requestId: string, now: number): boolean {
+  private touchWaitlist(
+    requestId: string,
+    now: number,
+  ): { readonly isHead: boolean; readonly isNew: boolean } {
     const existing = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { ticket: number }>(
         "SELECT ticket FROM waitlist WHERE request_id = ?",
         requestId,
       )
       .toArray()[0];
+    const isNew = existing === undefined;
     if (existing === undefined) {
       const nextTicket =
         this.ctx.storage.sql
@@ -379,7 +383,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         "SELECT request_id FROM waitlist ORDER BY ticket ASC LIMIT 1",
       )
       .one();
-    return head.request_id === requestId;
+    return { isHead: head.request_id === requestId, isNew };
   }
 
   private projectedWaitMs(requestId: string, remainingMs: number, elapsedMs: number): number {
@@ -400,8 +404,12 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     return projectedMs > 0 ? projectedMs : Math.min(remainingMs, ADMIT_BUDGET_MS);
   }
 
-  private refuseIfOverBudget(requestId: string, projectedMs: number): AcquireLeaseResult | null {
-    if (projectedMs <= ADMIT_BUDGET_MS) return null;
+  private refuseIfOverBudget(
+    requestId: string,
+    isNew: boolean,
+    projectedMs: number,
+  ): AcquireLeaseResult | null {
+    if (!isNew || projectedMs <= ADMIT_BUDGET_MS) return null;
     this.deleteWaitlistRow(requestId);
     return this.busy(projectedMs);
   }
