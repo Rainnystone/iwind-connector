@@ -52,14 +52,14 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-a", reportedAt + 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 1,
+      retryAfterMs: 10,
       queueDepth: 2,
       inLine: true,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + 2)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 2,
+      retryAfterMs: 20,
       queueDepth: 2,
       inLine: true,
     });
@@ -94,7 +94,7 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-a", reportedAt + RESERVATION_MS - 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 1,
+      retryAfterMs: 10,
       queueDepth: 2,
       inLine: true,
     });
@@ -131,14 +131,14 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-head", reportedAt + 50)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 50,
+      retryAfterMs: 10,
       queueDepth: 1,
       inLine: true,
     });
     await expect(acquireLease(stub, "stranger", reportedAt + 60)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 60,
+      retryAfterMs: 20,
       queueDepth: 2,
       inLine: true,
     });

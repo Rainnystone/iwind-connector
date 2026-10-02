@@ -1044,7 +1044,7 @@ describe("KeyPool SQLite Durable Object", () => {
     expect(overlapping).toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 7_999,
+      retryAfterMs: 8_000,
       queueDepth: 1,
       inLine: true,
     });
@@ -1108,7 +1108,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 34_000,
+      retryAfterMs: 32_000,
       queueDepth: 3,
       inLine: false,
     });
@@ -1237,12 +1237,12 @@ describe("KeyPool SQLite Durable Object", () => {
     await acquireLease(stub, "waiter-b", observedAt);
     await acquireLease(stub, "waiter-c", observedAt);
 
-    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+    await expect(acquireLease(stub, "fourth", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 35_000,
-      queueDepth: 3,
-      inLine: false,
+      retryAfterMs: 20_000,
+      queueDepth: 4,
+      inLine: true,
     });
   });
 
@@ -1258,7 +1258,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "boundary", observedAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 6_000,
+      retryAfterMs: 30_000,
       queueDepth: 4,
       inLine: true,
     });
@@ -1451,7 +1451,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "during-attempts", BASE_TIME + 50_500)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 9_500,
+      retryAfterMs: 8_000,
       queueDepth: 1,
       inLine: true,
     });
@@ -1522,7 +1522,7 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "after-eviction", BASE_TIME + 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 7_999,
+      retryAfterMs: 8_000,
       queueDepth: 1,
       inLine: true,
     });
@@ -1581,7 +1581,7 @@ describe("KeyPool SQLite Durable Object", () => {
         "call_count",
         "updated_at",
       ],
-      lease: ["singleton", "lease_id", "request_id", "slot_id", "expires_at"],
+      lease: ["singleton", "lease_id", "request_id", "slot_id", "expires_at", "granted_at"],
       testOutcome: ["singleton", "slot_id", "category"],
       oauthReplay: ["marker_id", "kind", "expires_at"],
       schemaMigrations: ["version", "applied_at"],

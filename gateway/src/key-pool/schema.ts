@@ -31,7 +31,8 @@ const CREATE_LEASE = `
     lease_id TEXT NOT NULL,
     request_id TEXT NOT NULL,
     slot_id TEXT NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    granted_at INTEGER
   )
 `;
 
@@ -185,6 +186,7 @@ function initializeLegacySchema(
 
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
+    ensureColumn(sql, "lease", "granted_at", "INTEGER");
     sql.exec(CREATE_WAITLIST);
     ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
@@ -253,6 +255,7 @@ function initializeVersionedSchema(
     sql.exec(CREATE_SCHEMA_MIGRATIONS);
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
+    ensureColumn(sql, "lease", "granted_at", "INTEGER");
     sql.exec(CREATE_WAITLIST);
     ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
