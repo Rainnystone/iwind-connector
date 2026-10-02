@@ -14,6 +14,7 @@ import { createWindToolCaller, WindCallFailure } from "../upstream/call-tool";
 import { MAX_ERROR_ENVELOPE_BYTES } from "../upstream/result-limit";
 
 import { MissingWindSecretError, resolveWindSecret } from "./resolve-secret";
+import { WIND_ATTEMPT_TIMEOUT_MS } from "./wind-attempt";
 import type {
   HeldLease,
   InvocationDependencies,
@@ -23,7 +24,6 @@ import type {
   ToolRoute,
 } from "./types";
 
-const TIMEOUT_MS = 600_000 as const;
 const MAX_RESPONSE_BYTES = 8_388_608 as const;
 const AUTH_FAILURE_BODY = JSON.stringify({ error: { code: "AUTH_ERROR" } });
 
@@ -368,7 +368,7 @@ async function callOnLease(
         toolName: request.toolName,
         arguments: request.input,
         apiKey,
-        timeoutMs: TIMEOUT_MS,
+        timeoutMs: WIND_ATTEMPT_TIMEOUT_MS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       });
       const toolFailure = classifyToolErrorResult(toolResult, now());

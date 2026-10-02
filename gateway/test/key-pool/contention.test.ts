@@ -94,7 +94,7 @@ describe("KeyPool contention", () => {
     await expect(resultPromise).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 1_230_000,
+      retryAfterMs: 30_250,
     });
   });
 

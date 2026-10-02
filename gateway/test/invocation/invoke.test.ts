@@ -254,6 +254,38 @@ describe("Wind invocation state machine", () => {
     },
   );
 
+  it("cuts off a silent upstream at 25 seconds, retries once on the same slot, and does not rotate", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const calls: Array<{ readonly apiKey: string; readonly timeoutMs: number }> = [];
+    const caller: WindToolCaller = {
+      async call(input) {
+        calls.push({ apiKey: input.apiKey, timeoutMs: input.timeoutMs });
+        throw timeoutFailure();
+      },
+    };
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(calls).toEqual([
+      { apiKey: SECRET_01, timeoutMs: 25_000 },
+      { apiKey: SECRET_01, timeoutMs: 25_000 },
+    ]);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(500);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(pool.reports).toEqual([report("lease-01", "key-01", "timeout", null, NOW)]);
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "timeout",
+    });
+  });
+
   it("stops after exactly one same-slot retry and does not acquire key-02", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
