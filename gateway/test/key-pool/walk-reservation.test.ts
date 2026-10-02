@@ -93,7 +93,7 @@ describe("walk reservation", () => {
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 1,
-      queueDepth: 1,
+      queueDepth: 2,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + RESERVATION_MS)).resolves.toEqual({
       ok: false,
@@ -228,12 +228,11 @@ describe("walk reservation", () => {
       ),
     ).toBe(false);
 
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
     await expect(
       stub.acquireLease({
         requestId: "following-request",
         attemptedSlotIds: [],
-        now: Date.now(),
+        now: Date.now() + 5_001,
       }),
     ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
   });

@@ -26,7 +26,7 @@ const LEASE_MARGIN_MS = 9_500;
 export const LEASE_TTL_MS =
   2 * WIND_ATTEMPT_TIMEOUT_MS + SAME_SLOT_RETRY_DELAY_MS + LEASE_MARGIN_MS;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
-const WAITLIST_STALE_AFTER_MS = 1_000;
+const WAITLIST_STALE_AFTER_MS = 5_000;
 const RESERVATION_TTL_MS = 2_000;
 const ADMIT_BUDGET_MS = 30_000;
 const DEFAULT_HOLD_MS = 8_000;
@@ -110,7 +110,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         return this.busy(remainingMs);
       }
       if (!holdsReservation && !isHead) {
-        const projectedMs = this.callersAhead(input.requestId) * this.medianHoldMs();
+        const projectedMs =
+          this.cursorCooldownRemainingMs(input.now) +
+          this.callersAhead(input.requestId) * this.medianHoldMs();
         const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
         if (refused !== null) return refused;
         return this.busy(projectedMs > 0 ? projectedMs : null);
@@ -421,7 +423,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
   }
 
   private recordHold(durationMs: number): void {
-    if (!Number.isSafeInteger(durationMs) || durationMs < 0) return;
+    if (!Number.isSafeInteger(durationMs) || durationMs < 1) return;
     this.ctx.storage.sql.exec("INSERT INTO lease_hold (duration_ms) VALUES (?)", durationMs);
     this.ctx.storage.sql.exec(
       `DELETE FROM lease_hold WHERE id NOT IN (
@@ -437,6 +439,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       )
       .toArray()
       .map((row) => row.duration_ms)
+      .filter((durationMs) => durationMs >= 1)
       .sort((left, right) => left - right);
     if (samples.length === 0) return DEFAULT_HOLD_MS;
     const mid = Math.floor(samples.length / 2);
@@ -444,7 +447,16 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     if (upper === undefined) return DEFAULT_HOLD_MS;
     if (samples.length % 2 === 1) return upper;
     const lower = samples[mid - 1];
-    return lower === undefined ? upper : Math.round((lower + upper) / 2);
+    const median = lower === undefined ? upper : Math.round((lower + upper) / 2);
+    return median > 0 ? median : DEFAULT_HOLD_MS;
+  }
+
+  private cursorCooldownRemainingMs(now: number): number {
+    const row = this.ctx.storage.sql
+      .exec<SlotRow>("SELECT * FROM slots WHERE slot_id = ?", this.readCursor())
+      .one();
+    if (row.state !== "cooldown" || row.cooldown_until === null) return 0;
+    return Math.max(0, row.cooldown_until - now);
   }
 
   private callersAhead(requestId: string): number {
