@@ -1034,6 +1034,155 @@ describe("KeyPool SQLite Durable Object", () => {
     });
   });
 
+  it("grants a held key to waiters in arrival order and keeps the cursor on that key", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 1)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 2)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 3)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 4,
+    });
+
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 5)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    const grantedA = await acquireLease(stub, "waiter-a", BASE_TIME + 6);
+    expect(grantedA).toMatchObject({ ok: true, slotId: "key-01" });
+    expect((await stub.getStatus()).currentSlotId).toBe("key-01");
+    if (!grantedA.ok) throw new Error("fixture-lease-not-acquired");
+
+    await stub.reportOutcome({
+      leaseId: grantedA.leaseId,
+      slotId: grantedA.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 7,
+    });
+
+    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 8)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    const grantedB = await acquireLease(stub, "waiter-b", BASE_TIME + 9);
+    expect(grantedB).toMatchObject({ ok: true, slotId: "key-01" });
+    if (!grantedB.ok) throw new Error("fixture-lease-not-acquired");
+
+    await stub.reportOutcome({
+      leaseId: grantedB.leaseId,
+      slotId: grantedB.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 10,
+    });
+
+    await expect(acquireLease(stub, "waiter-c", BASE_TIME + 11)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+    expect((await stub.getStatus()).currentSlotId).toBe("key-01");
+  });
+
+  it("skips a waiter that stops polling for more than one second", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await acquireLease(stub, "waiter-a", BASE_TIME + 1);
+    await acquireLease(stub, "waiter-b", BASE_TIME + 2);
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 3,
+    });
+
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_001)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_002)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+    expect((await stub.getStatus()).lease).toMatchObject({ requestId: "waiter-b" });
+  });
+
+  it("keeps a waiter that polls every 250ms ahead of a later arrival", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await acquireLease(stub, "waiter-a", BASE_TIME);
+    await acquireLease(stub, "waiter-b", BASE_TIME + 10);
+
+    for (const seenAt of [250, 500, 750, 1_000, 1_250]) {
+      await expect(acquireLease(stub, "waiter-a", BASE_TIME + seenAt)).resolves.toMatchObject({
+        ok: false,
+        code: "GATEWAY_BUSY",
+      });
+    }
+
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 1_251,
+    });
+
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 1_252)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 1_253)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+  });
+
+  it("returns GATEWAY_BUSY, not KEY_POOL_EXHAUSTED, while an earlier waiter holds the line", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await acquireLease(stub, "waiter-a", BASE_TIME + 1);
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: BASE_TIME + 2,
+    });
+
+    await expect(
+      acquireLease(stub, "exhausted-behind", BASE_TIME + 3, ["key-01", "key-02"]),
+    ).resolves.toEqual({
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: null,
+    });
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 4)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+  });
+
   it("catches a missing expiry cleanup by reclaiming an expired singleton lease", async () => {
     const stub = keyPool();
     const first = await acquireLease(stub, "request-01", BASE_TIME);
@@ -1099,6 +1248,10 @@ describe("KeyPool SQLite Durable Object", () => {
         )
         .toArray()
         .map((column) => column.name),
+      waitlist: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { name: string }>("PRAGMA table_info(waitlist)")
+        .toArray()
+        .map((column) => column.name),
     }));
 
     expect(columns).toEqual({
@@ -1117,6 +1270,7 @@ describe("KeyPool SQLite Durable Object", () => {
       oauthReplay: ["marker_id", "kind", "expires_at"],
       schemaMigrations: ["version", "applied_at"],
       poolState: ["singleton", "cursor_slot_id", "updated_at"],
+      waitlist: ["request_id", "ticket", "last_seen_at"],
     });
   });
 
@@ -1281,6 +1435,41 @@ describe("KeyPool SQLite Durable Object", () => {
     });
   });
 
+  it("keeps arrival order while a cursor cooldown is waited out, then grants that same slot", async () => {
+    const stub = keyPool();
+    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    if (!holder.ok) throw new Error("fixture-lease-not-acquired");
+    await stub.reportOutcome({
+      leaseId: holder.leaseId,
+      slotId: holder.slotId,
+      category: "qps",
+      resetAt: BASE_TIME + 5_000,
+      occurredAt: BASE_TIME + 1,
+    });
+
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 2)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 3)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 4_200)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-b", BASE_TIME + 5_000)).resolves.toMatchObject({
+      ok: false,
+      code: "GATEWAY_BUSY",
+    });
+    await expect(acquireLease(stub, "waiter-a", BASE_TIME + 5_000)).resolves.toMatchObject({
+      ok: true,
+      slotId: "key-01",
+    });
+    expect((await stub.getStatus()).currentSlotId).toBe("key-01");
+  });
+
   it("stops after every slot was attempted once and lets the next request probe again", async () => {
     const stub = keyPool();
     const first = await acquireLease(stub, "request-01", BASE_TIME, []);
@@ -1363,7 +1552,7 @@ describe("KeyPool SQLite Durable Object", () => {
         slotId: "key-01",
         state: "disabled_manual",
       });
-      await expect(acquireLease(stub, "after-report", BASE_TIME + 7)).resolves.toMatchObject({
+      await expect(acquireLease(stub, "after-report", BASE_TIME + 1_005)).resolves.toMatchObject({
         ok: true,
         slotId: "key-02",
       });

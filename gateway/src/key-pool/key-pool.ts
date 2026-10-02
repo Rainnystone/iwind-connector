@@ -22,6 +22,7 @@ import type {
 
 export const LEASE_TTL_MS = 1_230_000;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
+const WAITLIST_STALE_AFTER_MS = 1_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -75,6 +76,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const storedDefinitions = this.readStoredSlotDefinitions();
       assertAttemptedSlotIds(input.attemptedSlotIds, storedDefinitions);
       this.activateDueSlots(input.now);
+      const isHead = this.touchWaitlist(input.requestId, input.now);
       const current = this.readLease();
       if (current !== null && current.expires_at > input.now) {
         return {
@@ -82,6 +84,9 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           code: "GATEWAY_BUSY",
           retryAfterMs: current.expires_at - input.now,
         };
+      }
+      if (!isHead) {
+        return { ok: false, code: "GATEWAY_BUSY", retryAfterMs: null };
       }
       if (current !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
 
@@ -109,6 +114,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           candidate.state === "active" && !attemptedSlotIds.has(candidate.slot_id),
       );
       if (slot === undefined) {
+        this.deleteWaitlistRow(input.requestId);
         const next = this.readNextKnownReset();
         return {
           ok: false,
@@ -117,6 +123,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         };
       }
 
+      this.deleteWaitlistRow(input.requestId);
       const leaseId = crypto.randomUUID();
       const expiresAt = input.now + LEASE_TTL_MS;
       const slotId = this.asPersistedSlotId(slot.slot_id);
@@ -291,6 +298,49 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => this.activateDueSlots(now));
     await this.syncNextAlarm();
+  }
+
+  private touchWaitlist(requestId: string, now: number): boolean {
+    const existing = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { ticket: number }>(
+        "SELECT ticket FROM waitlist WHERE request_id = ?",
+        requestId,
+      )
+      .toArray()[0];
+    if (existing === undefined) {
+      const nextTicket =
+        this.ctx.storage.sql
+          .exec<Record<string, SqlStorageValue> & { ticket: number }>(
+            "SELECT COALESCE(MAX(ticket), 0) AS ticket FROM waitlist",
+          )
+          .one().ticket + 1;
+      this.ctx.storage.sql.exec(
+        "INSERT INTO waitlist (request_id, ticket, last_seen_at) VALUES (?, ?, ?)",
+        requestId,
+        nextTicket,
+        now,
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        "UPDATE waitlist SET last_seen_at = ? WHERE request_id = ?",
+        now,
+        requestId,
+      );
+    }
+    this.ctx.storage.sql.exec(
+      "DELETE FROM waitlist WHERE last_seen_at < ?",
+      now - WAITLIST_STALE_AFTER_MS,
+    );
+    const head = this.ctx.storage.sql
+      .exec<Record<string, SqlStorageValue> & { request_id: string }>(
+        "SELECT request_id FROM waitlist ORDER BY ticket ASC LIMIT 1",
+      )
+      .one();
+    return head.request_id === requestId;
+  }
+
+  private deleteWaitlistRow(requestId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM waitlist WHERE request_id = ?", requestId);
   }
 
   private readLease(): LeaseRow | null {
