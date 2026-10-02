@@ -102,6 +102,22 @@ describe("Wind invocation state machine", () => {
     expect(objectNames).toEqual(["private-key-pool-v2", "private-key-pool-v2"]);
   });
 
+  it("marks a classified failover report as continuing and leaves the success report unmarked", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([classifiedBody("DAILY_LIMIT_ERROR"), SUCCESS]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "daily_quota", null, NOW, true),
+      report("lease-02", "key-02", "success", null, NOW),
+    ]);
+  });
+
   it("routes a 200 isError exact daily envelope to key-02 and reports a successful rotation", async () => {
     const daily: CallToolResult = {
       content: [{ type: "text", text: "vendor error text is not parsed" }],
@@ -215,7 +231,7 @@ describe("Wind invocation state machine", () => {
       initialCategory: "auth",
     });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports).toEqual([report("lease-01", "key-01", "auth", null, NOW)]);
+    expect(pool.reports).toEqual([report("lease-01", "key-01", "auth", null, NOW, true)]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
     expect(logged).toEqual([
       expect.objectContaining({
@@ -225,6 +241,65 @@ describe("Wind invocation state machine", () => {
       }),
     ]);
     expect(lines.join("\n")).not.toContain("600519.SH");
+  });
+
+  it("does not mark continuing for success, a same-slot retry, a final stop, or a gateway-local failure", async () => {
+    const successPool = scriptedPool([lease("key-01", "lease-success")]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "plain-success" },
+      dependencies(successPool, scriptedCaller([SUCCESS])),
+    );
+    expect(successPool.reports).toEqual([
+      report("lease-success", "key-01", "success", null, NOW),
+    ]);
+
+    const retryPool = scriptedPool([
+      lease("key-01", "lease-retry"),
+      lease("key-02", "lease-retry-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "same-slot-retry" },
+      dependencies(
+        retryPool,
+        scriptedCaller([
+          new WindCallFailure({ status: 429, headers: { "retry-after": "2" } }),
+          new WindCallFailure({ status: 429, headers: { "retry-after": "2" } }),
+        ]),
+      ),
+    );
+    expect(retryPool.acquisitions).toHaveLength(1);
+    expect(retryPool.reports).toEqual([
+      report("lease-retry", "key-01", "qps", NOW + 2_000, NOW),
+    ]);
+
+    const stopPool = scriptedPool([
+      lease("key-01", "lease-stop"),
+      lease("key-02", "lease-stop-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "final-stop" },
+      dependencies(
+        stopPool,
+        scriptedCaller([new WindCallFailure({}, 8_388_609, "response_too_large")]),
+      ),
+    );
+    expect(stopPool.acquisitions).toHaveLength(1);
+    expect(stopPool.reports).toEqual([
+      report("lease-stop", "key-01", "response_too_large", null, NOW),
+    ]);
+
+    const localPool = scriptedPool([
+      lease("key-01", "lease-local"),
+      lease("key-02", "lease-local-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "gateway-local" },
+      dependencies(localPool, scriptedCaller([new Error("local-bug"), SUCCESS])),
+    );
+    expect(localPool.acquisitions).toHaveLength(1);
+    expect(localPool.reports).toEqual([
+      report("lease-local", "key-01", "unknown", null, NOW),
+    ]);
   });
 
   it.each([
@@ -276,6 +351,28 @@ describe("Wind invocation state machine", () => {
     expect(pool.reports[0]?.resetAt).toBe(NOW + 2_000);
   });
 
+  it("marks each Wind unknown walk report as continuing and leaves the finishing success unmarked", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+      lease("key-03", "lease-03"),
+    ]);
+    const caller = scriptedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "unknown", null, NOW, true),
+      report("lease-02", "key-02", "unknown", null, NOW, true),
+      report("lease-03", "key-03", "success", null, NOW),
+    ]);
+  });
+
   it("tries the next active slot once after an unclassified Wind failure and returns that success", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
@@ -300,7 +397,7 @@ describe("Wind invocation state machine", () => {
       { requestId: REQUEST.requestId, attemptedSlotIds: ["key-01"] },
     ]);
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "unknown", null, NOW),
+      report("lease-01", "key-01", "unknown", null, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
   });
@@ -393,7 +490,7 @@ describe("Wind invocation state machine", () => {
       finalStatus: "succeeded",
     });
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "daily_quota", null, NOW),
+      report("lease-01", "key-01", "daily_quota", null, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
@@ -468,9 +565,9 @@ describe("Wind invocation state machine", () => {
       initialCategory: "auth",
     });
     expect(caller.slots).toEqual([SECRET_02]);
-    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
-      ["key-01", "auth"],
-      ["key-02", "success"],
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category, entry.continuing ?? false])).toEqual([
+      ["key-01", "auth", true],
+      ["key-02", "success", false],
     ]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
     expect(logged).toEqual([
@@ -539,7 +636,7 @@ describe("Wind invocation state machine", () => {
       initialCategory: "daily_quota",
     });
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "daily_quota", 1_700_003_600_000, NOW),
+      report("lease-01", "key-01", "daily_quota", 1_700_003_600_000, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
   });
@@ -679,9 +776,9 @@ describe("Wind invocation state machine", () => {
       ["key-01", "key-02", "key-03"],
     ]);
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "unknown", null, NOW),
-      report("lease-02", "key-02", "unknown", null, NOW),
-      report("lease-03", "key-03", "unknown", null, NOW),
+      report("lease-01", "key-01", "unknown", null, NOW, true),
+      report("lease-02", "key-02", "unknown", null, NOW, true),
+      report("lease-03", "key-03", "unknown", null, NOW, true),
     ]);
   });
 
@@ -745,9 +842,9 @@ describe("Wind invocation state machine", () => {
       content: [{ type: "text", text: "iWind request failed (WIND_REPEATED_SLOT)." }],
     });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports.map((entry) => [entry.leaseId, entry.category])).toEqual([
-      ["lease-01", "unknown"],
-      ["lease-repeat", "unknown"],
+    expect(pool.reports.map((entry) => [entry.leaseId, entry.category, entry.continuing ?? false])).toEqual([
+      ["lease-01", "unknown", true],
+      ["lease-repeat", "unknown", false],
     ]);
   });
 
@@ -762,9 +859,9 @@ describe("Wind invocation state machine", () => {
 
     expect(result.notice).toMatchObject({ code: "WIND_KEY_ROTATION_FAILED" });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports.map((entry) => [entry.leaseId, entry.category])).toEqual([
-      ["lease-01", "daily_quota"],
-      ["lease-repeat", "unknown"],
+    expect(pool.reports.map((entry) => [entry.leaseId, entry.category, entry.continuing ?? false])).toEqual([
+      ["lease-01", "daily_quota", true],
+      ["lease-repeat", "unknown", false],
     ]);
   });
 
@@ -1226,8 +1323,16 @@ function report(
   category: ReportOutcomeInput["category"],
   resetAt: number | null,
   occurredAt: number,
+  continuing?: boolean,
 ): ReportOutcomeInput {
-  return { leaseId, slotId, category, resetAt, occurredAt };
+  return {
+    leaseId,
+    slotId,
+    category,
+    resetAt,
+    occurredAt,
+    ...(continuing === true ? { continuing: true } : {}),
+  };
 }
 
 function classifiedBody(code: string): WindCallFailure {

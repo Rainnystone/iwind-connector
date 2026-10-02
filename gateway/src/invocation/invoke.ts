@@ -100,6 +100,7 @@ export async function invokeWindTool(
   const settleLease = async (
     category: ReportOutcomeInput["category"],
     resetAt: number | null,
+    continuing = false,
   ): Promise<boolean> => {
     const lease = heldLease;
     if (lease === null) return true;
@@ -111,6 +112,7 @@ export async function invokeWindTool(
         category,
         resetAt,
         occurredAt: now(),
+        ...(continuing ? { continuing: true } : {}),
       });
       return true;
     } catch {
@@ -254,7 +256,7 @@ export async function invokeWindTool(
       }
       if (failure.decision.kind === "failover_slot") {
         failoverStarted = true;
-        const reported = await settleLease(failure.category, failure.resetAt);
+        const reported = await settleLease(failure.category, failure.resetAt, true);
         if (!reported) {
           return cleanupOrFailure(
             request,
@@ -275,7 +277,7 @@ export async function invokeWindTool(
       }
       if (windUnknownWalk) {
         failoverStarted = true;
-        const reported = await settleLease("unknown", null);
+        const reported = await settleLease("unknown", null, true);
         if (!reported) {
           return cleanupOrFailure(
             request,

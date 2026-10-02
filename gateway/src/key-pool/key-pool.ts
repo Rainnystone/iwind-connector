@@ -23,6 +23,7 @@ import type {
 export const LEASE_TTL_MS = 1_230_000;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
 const WAITLIST_STALE_AFTER_MS = 1_000;
+const RESERVATION_TTL_MS = 2_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -39,6 +40,11 @@ type LeaseRow = Record<string, SqlStorageValue> & {
   lease_id: string;
   request_id: string;
   slot_id: string;
+  expires_at: number;
+};
+
+type ReservationRow = Record<string, SqlStorageValue> & {
+  request_id: string;
   expires_at: number;
 };
 
@@ -85,8 +91,21 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           retryAfterMs: current.expires_at - input.now,
         };
       }
-      if (!isHead) {
+      const reservation = this.readLiveReservation(input.now);
+      const holdsReservation =
+        reservation !== null && reservation.request_id === input.requestId;
+      if (reservation !== null && !holdsReservation) {
+        return {
+          ok: false,
+          code: "GATEWAY_BUSY",
+          retryAfterMs: reservation.expires_at - input.now,
+        };
+      }
+      if (!holdsReservation && !isHead) {
         return { ok: false, code: "GATEWAY_BUSY", retryAfterMs: null };
+      }
+      if (holdsReservation) {
+        this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
       }
       if (current !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
 
@@ -171,6 +190,14 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         input.slotId,
       );
       this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
+      if (input.continuing === true) {
+        this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
+        this.ctx.storage.sql.exec(
+          "INSERT INTO reservation (singleton, request_id, expires_at) VALUES (1, ?, ?)",
+          lease.request_id,
+          input.occurredAt + RESERVATION_TTL_MS,
+        );
+      }
       if (transition.advanceCursor) {
         this.advanceCursorIfCurrent(input.slotId, input.occurredAt);
       }
@@ -348,6 +375,16 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       this.ctx.storage.sql.exec<LeaseRow>("SELECT * FROM lease WHERE singleton = 1").toArray()[0] ??
       null
     );
+  }
+
+  private readLiveReservation(now: number): ReservationRow | null {
+    const row =
+      this.ctx.storage.sql
+        .exec<ReservationRow>("SELECT request_id, expires_at FROM reservation WHERE singleton = 1")
+        .toArray()[0] ?? null;
+    if (row === null || row.expires_at > now) return row;
+    this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
+    return null;
   }
 
   private readCursor(): SlotId {
