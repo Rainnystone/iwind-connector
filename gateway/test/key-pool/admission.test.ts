@@ -232,6 +232,100 @@ describe("KeyPool admission against the caller's deadline", () => {
     });
   });
 
+  describe("refusal retry times", () => {
+    it("tells refused callers when they could rejoin, one median hold apart", async () => {
+      const stub = keyPool();
+      await grantedLease(stub, "holder", BASE_TIME);
+      const now = BASE_TIME + 50;
+
+      const results = [];
+      for (let index = 0; index < 7; index += 1) {
+        results.push(await acquire(stub, `burst-${String(index)}`, now));
+      }
+
+      expect(results.map((result) => (result.ok ? "ok" : [result.inLine, result.retryAfterMs]))).toEqual([
+        [true, 7_950],
+        [true, 15_950],
+        [true, 23_950],
+        [false, 1_950],
+        [false, 9_950],
+        [false, 17_950],
+        [false, 25_950],
+      ]);
+    });
+
+    it("admits a refused caller that comes back at its retry time with no newcomers in between", async () => {
+      const stub = keyPool();
+      await grantedLease(stub, "holder", BASE_TIME);
+      const joinedAt = BASE_TIME + 50;
+      for (const requestId of ["a", "b", "c"]) await acquire(stub, requestId, joinedAt);
+      const refused = await acquire(stub, "refused", joinedAt);
+      if (refused.ok || refused.retryAfterMs === null) throw new Error("expected a refusal with a retry time");
+      expect(refused.inLine).toBe(false);
+
+      const returnsAt = joinedAt + refused.retryAfterMs;
+      for (const requestId of ["a", "b", "c"]) {
+        await expect(
+          acquire(stub, requestId, returnsAt, joinedAt + BUDGET_MS),
+        ).resolves.toMatchObject({ inLine: true });
+      }
+      await expect(acquire(stub, "refused", returnsAt)).resolves.toMatchObject({
+        ok: false,
+        inLine: true,
+        queueDepth: 4,
+      });
+    });
+
+    it("never tells a refused caller to come back in less than one second", async () => {
+      const stub = keyPool();
+      await grantedLease(stub, "holder", BASE_TIME);
+      await expect(
+        acquire(stub, "tight", BASE_TIME + 100, BASE_TIME + 100 + 7_850),
+      ).resolves.toMatchObject({ inLine: false, retryAfterMs: 1_000 });
+    });
+
+    it("refuses a newcomer that cannot fit a cursor cooldown with a rejoin time", async () => {
+      const stub = keyPool();
+      const lease = await grantedLease(stub, "rate-limited", BASE_TIME);
+      await stub.reportOutcome({
+        leaseId: lease.leaseId,
+        slotId: lease.slotId,
+        category: "qps",
+        resetAt: BASE_TIME + 45_000,
+        occurredAt: BASE_TIME + 5_000,
+      });
+
+      await expect(acquire(stub, "newcomer", BASE_TIME + 5_000)).resolves.toEqual({
+        ok: false,
+        code: "GATEWAY_BUSY",
+        retryAfterMs: 10_000,
+        queueDepth: 0,
+        inLine: false,
+      });
+    });
+
+    it("keeps a caller already in line when a cooldown starts", async () => {
+      const stub = keyPool();
+      const lease = await grantedLease(stub, "rate-limited", BASE_TIME);
+      await acquire(stub, "waiter", BASE_TIME + 100);
+      await stub.reportOutcome({
+        leaseId: lease.leaseId,
+        slotId: lease.slotId,
+        category: "qps",
+        resetAt: BASE_TIME + 45_000,
+        occurredAt: BASE_TIME + 1_000,
+      });
+
+      await expect(acquire(stub, "waiter", BASE_TIME + 1_100, BASE_TIME + 100 + BUDGET_MS)).resolves.toEqual({
+        ok: false,
+        code: "GATEWAY_BUSY",
+        retryAfterMs: 43_900,
+        queueDepth: 1,
+        inLine: true,
+      });
+    });
+  });
+
   it("grants a walk step its reserved lease even when a newcomer would be refused", async () => {
     const stub = keyPool();
     const sample = await grantedLease(stub, "sample", BASE_TIME);

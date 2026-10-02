@@ -29,6 +29,7 @@ export const OAUTH_REPLAY_TTL_MS = 600_000;
 const WAITLIST_STALE_AFTER_MS = 5_000;
 const RESERVATION_TTL_MS = 2_000;
 const DEFAULT_HOLD_MS = 8_000;
+const MIN_REFUSAL_RETRY_MS = 1_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -102,7 +103,8 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         if (this.isWaiting(input.requestId)) {
           this.refreshWaiter(input.requestId, input.now);
         } else {
-          if (waitMs > input.deadlineAt - input.now) return this.busy(waitMs, false);
+          const budgetMs = input.deadlineAt - input.now;
+          if (waitMs > budgetMs) return this.refuse(input.now, waitMs, budgetMs);
           this.joinWaitlist(input.requestId, input.now, input.deadlineAt);
         }
         if (liveLease !== null || otherReservation !== null || !this.isHead(input.requestId)) {
@@ -435,18 +437,34 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     );
   }
 
+  private refuse(now: number, waitMs: number, budgetMs: number): AcquireLeaseResult {
+    const horizonAt =
+      this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue> & { at: number }>(
+          "SELECT at FROM refusal_horizon WHERE singleton = 1",
+        )
+        .toArray()[0]?.at ?? now;
+    const rejoinAt = Math.max(now + waitMs - budgetMs, now + MIN_REFUSAL_RETRY_MS, horizonAt);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO refusal_horizon (singleton, at) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET at = excluded.at`,
+      rejoinAt + this.medianHoldMs(),
+    );
+    return this.busy(rejoinAt - now, false);
+  }
+
   private holdSamples(): readonly number[] {
-    return this.ctx.storage.sql
+    const samples = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { duration_ms: number }>(
         "SELECT duration_ms FROM lease_hold WHERE duration_ms >= 1 ORDER BY duration_ms ASC",
       )
       .toArray()
       .map((row) => row.duration_ms);
+    return samples.length === 0 ? [DEFAULT_HOLD_MS] : samples;
   }
 
   private medianHoldMs(): number {
-    const samples = this.holdSamples();
-    return samples.length === 0 ? DEFAULT_HOLD_MS : median(samples);
+    return median(this.holdSamples());
   }
 
   private cursorCooldownRemainingMs(now: number): number {

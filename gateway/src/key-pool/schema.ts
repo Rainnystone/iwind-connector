@@ -53,6 +53,13 @@ const CREATE_RESERVATION = `
   )
 `;
 
+const CREATE_REFUSAL_HORIZON = `
+  CREATE TABLE IF NOT EXISTS refusal_horizon (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    at INTEGER NOT NULL
+  )
+`;
+
 const CREATE_LEASE_HOLD = `
   CREATE TABLE IF NOT EXISTS lease_hold (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +198,7 @@ function initializeLegacySchema(
     ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_LEASE_HOLD);
+    sql.exec(CREATE_REFUSAL_HORIZON);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     synchronizeLegacySlots(sql, definitions);
@@ -260,6 +268,7 @@ function initializeVersionedSchema(
     ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
     sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_LEASE_HOLD);
+    sql.exec(CREATE_REFUSAL_HORIZON);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     sql.exec(CREATE_POOL_STATE);
