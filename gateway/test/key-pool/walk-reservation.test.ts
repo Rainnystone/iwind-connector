@@ -53,7 +53,7 @@ describe("walk reservation", () => {
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: RESERVATION_MS - 1,
-      queueDepth: 1,
+      queueDepth: 2,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + 2)).resolves.toEqual({
       ok: false,
@@ -98,7 +98,7 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-b", reportedAt + RESERVATION_MS)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: null,
+      retryAfterMs: 10,
       queueDepth: 2,
     });
     await expect(acquireLease(stub, "waiter-a", reportedAt + RESERVATION_MS)).resolves.toMatchObject({

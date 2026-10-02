@@ -1030,18 +1030,27 @@ describe("KeyPool SQLite Durable Object", () => {
     expect(overlapping).toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 59_999,
-      queueDepth: 0,
+      retryAfterMs: 7_999,
+      queueDepth: 1,
     });
   });
 
   it("refuses an overflowing caller on one acquire and does not keep their place in line", async () => {
     const stub = keyPool();
-    const holder = await acquireLease(stub, "holder", BASE_TIME);
+    const sample = await acquireLease(stub, "sample", BASE_TIME);
+    if (!sample.ok) throw new Error("fixture-lease-not-acquired");
+    const heldAt = BASE_TIME + 40_000;
+    await stub.reportOutcome({
+      leaseId: sample.leaseId,
+      slotId: sample.slotId,
+      category: "success",
+      resetAt: null,
+      occurredAt: heldAt,
+    });
+    const holder = await acquireLease(stub, "holder", heldAt);
     if (!holder.ok) throw new Error("fixture-lease-not-acquired");
-    const observedAt = BASE_TIME + 60_000 - 40_000;
 
-    await expect(acquireLease(stub, "overflow", observedAt)).resolves.toEqual({
+    await expect(acquireLease(stub, "overflow", heldAt)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 40_000,
@@ -1053,10 +1062,10 @@ describe("KeyPool SQLite Durable Object", () => {
       slotId: holder.slotId,
       category: "success",
       resetAt: null,
-      occurredAt: observedAt,
+      occurredAt: heldAt + 1,
     });
 
-    await expect(acquireLease(stub, "next", observedAt + 1)).resolves.toMatchObject({
+    await expect(acquireLease(stub, "next", heldAt + 2)).resolves.toMatchObject({
       ok: true,
       slotId: "key-01",
     });
@@ -1438,8 +1447,8 @@ describe("KeyPool SQLite Durable Object", () => {
     await expect(acquireLease(stub, "after-eviction", BASE_TIME + 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 59_999,
-      queueDepth: 0,
+      retryAfterMs: 7_999,
+      queueDepth: 1,
     });
   });
 

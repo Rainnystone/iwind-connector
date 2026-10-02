@@ -184,6 +184,8 @@ export async function invokeWindTool(
           "WIND_REPEATED_SLOT",
           upstreamLog,
           acquisition.slotId,
+          queueWaitMs,
+          queueDepth,
         );
       }
       attemptedSlots.add(acquisition.slotId);
@@ -281,6 +283,8 @@ export async function invokeWindTool(
             "KEY_POOL_REPORT_FAILED",
             upstreamLog,
             acquisition.slotId,
+            queueWaitMs,
+            queueDepth,
           );
         }
         continue;
@@ -302,6 +306,8 @@ export async function invokeWindTool(
             "KEY_POOL_REPORT_FAILED",
             upstreamLog,
             acquisition.slotId,
+            queueWaitMs,
+            queueDepth,
           );
         }
         continue;
@@ -324,6 +330,8 @@ export async function invokeWindTool(
         failure.stableCode,
         upstreamLog,
         acquisition.slotId,
+        queueWaitMs,
+        queueDepth,
       );
     }
   } catch {
@@ -343,6 +351,8 @@ export async function invokeWindTool(
       "WIND_UNKNOWN",
       upstreamLog,
       leasedSlotId,
+      queueWaitMs,
+      queueDepth,
     );
   } finally {
     if (heldLease !== null) await settleLease("unknown", null);
@@ -543,6 +553,8 @@ function cleanupOrFailure(
   stableCode: string,
   upstreamLog: UpstreamLogScalars,
   slotId: SlotId | null,
+  queueWaitMs: number,
+  queueDepth: number,
 ): InvocationResult {
   const effectiveCode = reportSucceeded ? stableCode : "KEY_POOL_REPORT_FAILED";
   const notice = failureNotice(
@@ -562,6 +574,8 @@ function cleanupOrFailure(
       responseBytes,
       notice,
       upstreamLog,
+      queueWaitMs,
+      queueDepth,
     ),
   );
   return { toolResult: failureToolResult(effectiveCode), notice };

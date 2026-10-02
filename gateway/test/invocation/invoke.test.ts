@@ -1121,21 +1121,13 @@ describe("Wind invocation state machine", () => {
       ),
     ]);
 
-    const succeeded = results.filter((result) => result.toolResult === SUCCESS);
-    const refused = results.filter((result) => result.toolResult !== SUCCESS);
-    expect(succeeded).toHaveLength(1);
-    expect(refused).toHaveLength(1);
-    expect(refused[0]?.toolResult.isError).toBe(true);
-    const refusedText = refused[0]?.toolResult.content.find((block) => block.type === "text");
-    expect(refusedText && "text" in refusedText ? refusedText.text : "").toMatch(
-      /^iWind request failed \(GATEWAY_BUSY\)\. Retry after \d+s\.$/,
-    );
+    expect(results.filter((result) => result.toolResult === SUCCESS)).toHaveLength(2);
     expect(maxInFlight).toBe(1);
   });
 
   it("names the leased slot on a hard stop and leaves the pool-exhausted line without a slot", async () => {
     const stopPool = scriptedPool([
-      lease("key-01", "lease-01"),
+      { ...lease("key-01", "lease-01"), queueDepth: 3 },
       lease("key-02", "lease-02"),
     ]);
     const stopLines: string[] = [];
@@ -1155,6 +1147,7 @@ describe("Wind invocation state machine", () => {
       expect.objectContaining({
         slotId: "key-01",
         status: "WIND_RESPONSE_TOO_LARGE",
+        queueDepth: 3,
       }),
     ]);
 
