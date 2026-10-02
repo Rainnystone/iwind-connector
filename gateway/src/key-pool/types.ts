@@ -36,6 +36,7 @@ export interface ReportOutcomeInput {
   readonly category: WindFailureCategory | "success";
   readonly resetAt: number | null;
   readonly occurredAt: number;
+  readonly continuing?: boolean;
 }
 
 export interface KeyPoolSlotStatus {

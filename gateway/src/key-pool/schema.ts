@@ -43,6 +43,14 @@ const CREATE_WAITLIST = `
   )
 `;
 
+const CREATE_RESERVATION = `
+  CREATE TABLE IF NOT EXISTS reservation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    request_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )
+`;
+
 const CREATE_PENDING_TEST_OUTCOME = `
   CREATE TABLE IF NOT EXISTS pending_test_outcome (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -170,6 +178,7 @@ function initializeLegacySchema(
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
     sql.exec(CREATE_WAITLIST);
+    sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     synchronizeLegacySlots(sql, definitions);
@@ -235,6 +244,7 @@ function initializeVersionedSchema(
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
     sql.exec(CREATE_WAITLIST);
+    sql.exec(CREATE_RESERVATION);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     sql.exec(CREATE_POOL_STATE);
