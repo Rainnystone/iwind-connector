@@ -23,7 +23,7 @@ export interface WindToolCaller {
     toolName: string;
     arguments: Readonly<Record<string, unknown>>;
     apiKey: string;
-    timeoutMs: 600_000;
+    timeoutMs: number;
     maxResponseBytes: 8_388_608;
   }): Promise<CallToolResult>;
 }

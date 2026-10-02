@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { WindFailureCategory } from "../errors/types";
+import { WIND_ATTEMPT_TIMEOUT_MS } from "../invocation/wind-attempt";
 import { nextSlotId, orderSlotRing } from "./slot-ring";
 import { getKeyPoolConfigurationForObject } from "./slots";
 import {
@@ -20,7 +21,10 @@ import type {
   SlotState,
 } from "./types";
 
-export const LEASE_TTL_MS = 1_230_000;
+const SAME_SLOT_RETRY_DELAY_MS = 500;
+const LEASE_MARGIN_MS = 9_500;
+export const LEASE_TTL_MS =
+  2 * WIND_ATTEMPT_TIMEOUT_MS + SAME_SLOT_RETRY_DELAY_MS + LEASE_MARGIN_MS;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
