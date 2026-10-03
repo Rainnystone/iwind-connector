@@ -10,6 +10,7 @@ import { getKeyPoolConfiguration } from "../key-pool/slots";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool/types";
 import { emitLogEvent, type GatewayLogEvent } from "../logging/event";
 import type { OpsNoticeV1 } from "../notices/types";
+import { WIND_ATTEMPT_TIMEOUT_MS } from "../upstream/attempt-timeout";
 import { createWindToolCaller, WindCallFailure } from "../upstream/call-tool";
 import { MAX_ERROR_ENVELOPE_BYTES } from "../upstream/result-limit";
 
@@ -23,7 +24,6 @@ import type {
   ToolRoute,
 } from "./types";
 
-const TIMEOUT_MS = 600_000 as const;
 const MAX_RESPONSE_BYTES = 8_388_608 as const;
 const AUTH_FAILURE_BODY = JSON.stringify({ error: { code: "AUTH_ERROR" } });
 
@@ -56,6 +56,8 @@ export async function invokeWindTool(
   let upstreamLog: UpstreamLogScalars = { upstreamStatus: null, upstreamErrorCode: null };
   let latchedFirstFailure = false;
   let lastResponseBytes: number | null = null;
+  let queueWaitMs = 0;
+  let queueDepth = 0;
   const currentLog = (
     domain: GatewayLogEvent["domain"],
     slotId: SlotId | null,
@@ -74,6 +76,8 @@ export async function invokeWindTool(
       responseBytes,
       notice,
       upstreamLog,
+      queueWaitMs,
+      queueDepth,
     );
   const caller =
     dependencies.caller ??
@@ -100,6 +104,7 @@ export async function invokeWindTool(
   const settleLease = async (
     category: ReportOutcomeInput["category"],
     resetAt: number | null,
+    continuing = false,
   ): Promise<boolean> => {
     const lease = heldLease;
     if (lease === null) return true;
@@ -111,6 +116,7 @@ export async function invokeWindTool(
         category,
         resetAt,
         occurredAt: now(),
+        ...(continuing ? { continuing: true } : {}),
       });
       return true;
     } catch {
@@ -132,7 +138,10 @@ export async function invokeWindTool(
 
   try {
     while (true) {
+      const acquireStartedAt = now();
       const acquisition = await keyPool.acquire(request.requestId, [...attemptedSlots]);
+      queueWaitMs += Math.max(0, now() - acquireStartedAt);
+      queueDepth = acquisition.queueDepth;
       if (!acquisition.ok) {
         const notice = admissionNotice(
           request.requestId,
@@ -151,7 +160,10 @@ export async function invokeWindTool(
             notice,
           ),
         );
-        return { toolResult: failureToolResult(acquisition.code), notice };
+        return {
+          toolResult: failureToolResult(acquisition.code, acquisition.retryAfterMs),
+          notice,
+        };
       }
 
       heldLease = { leaseId: acquisition.leaseId, slotId: acquisition.slotId };
@@ -172,6 +184,8 @@ export async function invokeWindTool(
           "WIND_REPEATED_SLOT",
           upstreamLog,
           acquisition.slotId,
+          queueWaitMs,
+          queueDepth,
         );
       }
       attemptedSlots.add(acquisition.slotId);
@@ -254,7 +268,7 @@ export async function invokeWindTool(
       }
       if (failure.decision.kind === "failover_slot") {
         failoverStarted = true;
-        const reported = await settleLease(failure.category, failure.resetAt);
+        const reported = await settleLease(failure.category, failure.resetAt, true);
         if (!reported) {
           return cleanupOrFailure(
             request,
@@ -269,13 +283,15 @@ export async function invokeWindTool(
             "KEY_POOL_REPORT_FAILED",
             upstreamLog,
             acquisition.slotId,
+            queueWaitMs,
+            queueDepth,
           );
         }
         continue;
       }
       if (windUnknownWalk) {
         failoverStarted = true;
-        const reported = await settleLease("unknown", null);
+        const reported = await settleLease("unknown", null, true);
         if (!reported) {
           return cleanupOrFailure(
             request,
@@ -290,6 +306,8 @@ export async function invokeWindTool(
             "KEY_POOL_REPORT_FAILED",
             upstreamLog,
             acquisition.slotId,
+            queueWaitMs,
+            queueDepth,
           );
         }
         continue;
@@ -312,6 +330,8 @@ export async function invokeWindTool(
         failure.stableCode,
         upstreamLog,
         acquisition.slotId,
+        queueWaitMs,
+        queueDepth,
       );
     }
   } catch {
@@ -331,6 +351,8 @@ export async function invokeWindTool(
       "WIND_UNKNOWN",
       upstreamLog,
       leasedSlotId,
+      queueWaitMs,
+      queueDepth,
     );
   } finally {
     if (heldLease !== null) await settleLease("unknown", null);
@@ -368,7 +390,7 @@ async function callOnLease(
         toolName: request.toolName,
         arguments: request.input,
         apiKey,
-        timeoutMs: TIMEOUT_MS,
+        timeoutMs: WIND_ATTEMPT_TIMEOUT_MS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       });
       const toolFailure = classifyToolErrorResult(toolResult, now());
@@ -531,6 +553,8 @@ function cleanupOrFailure(
   stableCode: string,
   upstreamLog: UpstreamLogScalars,
   slotId: SlotId | null,
+  queueWaitMs: number,
+  queueDepth: number,
 ): InvocationResult {
   const effectiveCode = reportSucceeded ? stableCode : "KEY_POOL_REPORT_FAILED";
   const notice = failureNotice(
@@ -550,6 +574,8 @@ function cleanupOrFailure(
       responseBytes,
       notice,
       upstreamLog,
+      queueWaitMs,
+      queueDepth,
     ),
   );
   return { toolResult: failureToolResult(effectiveCode), notice };
@@ -588,9 +614,16 @@ function failureNotice(
   return { schemaVersion: 1, code, initialCategory, finalStatus: "failed", requestId };
 }
 
-function failureToolResult(code: string): CallToolResult {
+function failureToolResult(code: string, retryAfterMs: number | null = null): CallToolResult {
+  const retryText =
+    code === "GATEWAY_BUSY" &&
+    retryAfterMs !== null &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs >= 0
+      ? ` Retry after ${String(Math.ceil(retryAfterMs / 1_000))}s.`
+      : "";
   return {
-    content: [{ type: "text", text: `iWind request failed (${code}).` }],
+    content: [{ type: "text", text: `iWind request failed (${code}).${retryText}` }],
     isError: true,
   };
 }
@@ -627,6 +660,8 @@ function logEvent(
   responseBytes: number | null,
   notice: OpsNoticeV1 | null,
   upstreamLog: UpstreamLogScalars,
+  queueWaitMs = 0,
+  queueDepth = 0,
 ): GatewayLogEvent {
   return {
     requestId: request.requestId,
@@ -639,6 +674,8 @@ function logEvent(
     noticeCode: notice?.code ?? null,
     upstreamStatus: upstreamLog.upstreamStatus,
     upstreamErrorCode: upstreamLog.upstreamErrorCode,
+    queueWaitMs,
+    queueDepth,
   };
 }
 

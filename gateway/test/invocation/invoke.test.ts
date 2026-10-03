@@ -102,6 +102,22 @@ describe("Wind invocation state machine", () => {
     expect(objectNames).toEqual(["private-key-pool-v2", "private-key-pool-v2"]);
   });
 
+  it("marks a classified failover report as continuing and leaves the success report unmarked", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const caller = scriptedCaller([classifiedBody("DAILY_LIMIT_ERROR"), SUCCESS]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "daily_quota", null, NOW, true),
+      report("lease-02", "key-02", "success", null, NOW),
+    ]);
+  });
+
   it("routes a 200 isError exact daily envelope to key-02 and reports a successful rotation", async () => {
     const daily: CallToolResult = {
       content: [{ type: "text", text: "vendor error text is not parsed" }],
@@ -200,7 +216,7 @@ describe("Wind invocation state machine", () => {
   it("reports auth then a rotation failure when the pool has no next slot", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
-      { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null },
+      { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null, queueDepth: 0 },
     ]);
     const caller = scriptedCaller([classifiedBody("AUTH_ERROR")]);
     const lines: string[] = [];
@@ -215,7 +231,7 @@ describe("Wind invocation state machine", () => {
       initialCategory: "auth",
     });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports).toEqual([report("lease-01", "key-01", "auth", null, NOW)]);
+    expect(pool.reports).toEqual([report("lease-01", "key-01", "auth", null, NOW, true)]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
     expect(logged).toEqual([
       expect.objectContaining({
@@ -225,6 +241,65 @@ describe("Wind invocation state machine", () => {
       }),
     ]);
     expect(lines.join("\n")).not.toContain("600519.SH");
+  });
+
+  it("does not mark continuing for success, a same-slot retry, a final stop, or a gateway-local failure", async () => {
+    const successPool = scriptedPool([lease("key-01", "lease-success")]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "plain-success" },
+      dependencies(successPool, scriptedCaller([SUCCESS])),
+    );
+    expect(successPool.reports).toEqual([
+      report("lease-success", "key-01", "success", null, NOW),
+    ]);
+
+    const retryPool = scriptedPool([
+      lease("key-01", "lease-retry"),
+      lease("key-02", "lease-retry-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "same-slot-retry" },
+      dependencies(
+        retryPool,
+        scriptedCaller([
+          new WindCallFailure({ status: 429, headers: { "retry-after": "2" } }),
+          new WindCallFailure({ status: 429, headers: { "retry-after": "2" } }),
+        ]),
+      ),
+    );
+    expect(retryPool.acquisitions).toHaveLength(1);
+    expect(retryPool.reports).toEqual([
+      report("lease-retry", "key-01", "qps", NOW + 2_000, NOW),
+    ]);
+
+    const stopPool = scriptedPool([
+      lease("key-01", "lease-stop"),
+      lease("key-02", "lease-stop-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "final-stop" },
+      dependencies(
+        stopPool,
+        scriptedCaller([new WindCallFailure({}, 8_388_609, "response_too_large")]),
+      ),
+    );
+    expect(stopPool.acquisitions).toHaveLength(1);
+    expect(stopPool.reports).toEqual([
+      report("lease-stop", "key-01", "response_too_large", null, NOW),
+    ]);
+
+    const localPool = scriptedPool([
+      lease("key-01", "lease-local"),
+      lease("key-02", "lease-local-next"),
+    ]);
+    await invokeWindTool(
+      { ...REQUEST, requestId: "gateway-local" },
+      dependencies(localPool, scriptedCaller([new Error("local-bug"), SUCCESS])),
+    );
+    expect(localPool.acquisitions).toHaveLength(1);
+    expect(localPool.reports).toEqual([
+      report("lease-local", "key-01", "unknown", null, NOW),
+    ]);
   });
 
   it.each([
@@ -254,6 +329,38 @@ describe("Wind invocation state machine", () => {
     },
   );
 
+  it("cuts off a silent upstream at 25 seconds, retries once on the same slot, and does not rotate", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+    ]);
+    const calls: Array<{ readonly apiKey: string; readonly timeoutMs: number }> = [];
+    const caller: WindToolCaller = {
+      async call(input) {
+        calls.push({ apiKey: input.apiKey, timeoutMs: input.timeoutMs });
+        throw timeoutFailure();
+      },
+    };
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await invokeWindTool(REQUEST, {
+      ...dependencies(pool, caller),
+      sleep,
+    });
+
+    expect(calls).toEqual([
+      { apiKey: SECRET_01, timeoutMs: 25_000 },
+      { apiKey: SECRET_01, timeoutMs: 25_000 },
+    ]);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(500);
+    expect(pool.acquisitions).toHaveLength(1);
+    expect(pool.reports).toEqual([report("lease-01", "key-01", "timeout", null, NOW)]);
+    expect(result.notice).toMatchObject({
+      code: "WIND_REQUEST_FAILED",
+      initialCategory: "timeout",
+    });
+  });
+
   it("stops after exactly one same-slot retry and does not acquire key-02", async () => {
     const pool = scriptedPool([
       lease("key-01", "lease-01"),
@@ -274,6 +381,28 @@ describe("Wind invocation state machine", () => {
     expect(pool.acquisitions).toHaveLength(1);
     expect(pool.reports.map((entry) => entry.category)).toEqual(["qps"]);
     expect(pool.reports[0]?.resetAt).toBe(NOW + 2_000);
+  });
+
+  it("marks each Wind unknown walk report as continuing and leaves the finishing success unmarked", async () => {
+    const pool = scriptedPool([
+      lease("key-01", "lease-01"),
+      lease("key-02", "lease-02"),
+      lease("key-03", "lease-03"),
+    ]);
+    const caller = scriptedCaller([
+      new WindCallFailure({ body: "not-json" }),
+      new WindCallFailure({ body: "not-json" }),
+      SUCCESS,
+    ]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
+
+    expect(result.toolResult).toBe(SUCCESS);
+    expect(pool.reports).toEqual([
+      report("lease-01", "key-01", "unknown", null, NOW, true),
+      report("lease-02", "key-02", "unknown", null, NOW, true),
+      report("lease-03", "key-03", "success", null, NOW),
+    ]);
   });
 
   it("tries the next active slot once after an unclassified Wind failure and returns that success", async () => {
@@ -300,7 +429,7 @@ describe("Wind invocation state machine", () => {
       { requestId: REQUEST.requestId, attemptedSlotIds: ["key-01"] },
     ]);
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "unknown", null, NOW),
+      report("lease-01", "key-01", "unknown", null, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
   });
@@ -393,7 +522,7 @@ describe("Wind invocation state machine", () => {
       finalStatus: "succeeded",
     });
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "daily_quota", null, NOW),
+      report("lease-01", "key-01", "daily_quota", null, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
@@ -412,10 +541,119 @@ describe("Wind invocation state machine", () => {
     expect(serialized).not.toContain("600519.SH");
   });
 
+  it("rounds a known GATEWAY_BUSY retry up to whole seconds in the failure text", async () => {
+    const pool = scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_001, queueDepth: 0 }]);
+
+    const result = await invokeWindTool(REQUEST, dependencies(pool, scriptedCaller([])));
+
+    expect(result.toolResult).toEqual({
+      isError: true,
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 2s." }],
+    });
+    expect(result.notice).toEqual({
+      schemaVersion: 1,
+      code: "GATEWAY_BUSY",
+      initialCategory: null,
+      finalStatus: "failed",
+      requestId: "request-01",
+    });
+    expect(JSON.stringify(result)).not.toContain("argument-must-not-be-logged");
+    expect(JSON.stringify(result)).not.toContain("600519.SH");
+  });
+
+  it("keeps an exact second and leaves other failure text unchanged", async () => {
+    const exact = await invokeWindTool(
+      REQUEST,
+      dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_000, queueDepth: 0 }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(exact.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 1s." }],
+    });
+
+    const unknownRetry = await invokeWindTool(
+      { ...REQUEST, requestId: "request-02" },
+      dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: null, queueDepth: 0 }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(unknownRetry.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY)." }],
+    });
+
+    const exhausted = await invokeWindTool(
+      { ...REQUEST, requestId: "request-03" },
+      dependencies(
+        scriptedPool([{ ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: 5_000, queueDepth: 0 }]),
+        scriptedCaller([]),
+      ),
+    );
+    expect(exhausted.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (KEY_POOL_EXHAUSTED)." }],
+    });
+  });
+
+  it("logs integer queue wait and depth on busy and successful tool lines", async () => {
+    const busyLines: string[] = [];
+    const busy = await invokeWindTool(REQUEST, {
+      ...dependencies(
+        scriptedPool([{ ok: false, code: "GATEWAY_BUSY", retryAfterMs: 1_001, queueDepth: 4 }]),
+        scriptedCaller([]),
+      ),
+      log: (event) => emitLogEvent(event, (line) => busyLines.push(line)),
+    });
+
+    expect(busy.toolResult).toMatchObject({
+      content: [{ type: "text", text: "iWind request failed (GATEWAY_BUSY). Retry after 2s." }],
+    });
+    const busyLog = JSON.parse(busyLines[0] ?? "") as {
+      queueWaitMs: unknown;
+      queueDepth: unknown;
+      slotId: unknown;
+    };
+    expect(busyLog).toMatchObject({
+      slotId: null,
+      status: "GATEWAY_BUSY",
+      queueWaitMs: 0,
+      queueDepth: 4,
+      upstreamStatus: null,
+      upstreamErrorCode: null,
+      responseBytes: null,
+    });
+    expect(Number.isInteger(busyLog.queueWaitMs)).toBe(true);
+    expect(Number.isInteger(busyLog.queueDepth)).toBe(true);
+    expect(busyLines.join("\n")).not.toContain("argument-must-not-be-logged");
+    expect(busyLines.join("\n")).not.toContain("600519.SH");
+
+    const successLines: string[] = [];
+    await invokeWindTool(
+      { ...REQUEST, requestId: "request-02" },
+      {
+        ...dependencies(scriptedPool([lease("key-01", "lease-01")]), scriptedCaller([SUCCESS])),
+        log: (event) => emitLogEvent(event, (line) => successLines.push(line)),
+      },
+    );
+    const successLog = JSON.parse(successLines[0] ?? "") as {
+      queueWaitMs: unknown;
+      queueDepth: unknown;
+    };
+    expect(successLog).toMatchObject({
+      slotId: "key-01",
+      status: "success",
+      queueWaitMs: 0,
+      queueDepth: 0,
+    });
+    expect(Number.isInteger(successLog.queueWaitMs)).toBe(true);
+    expect(Number.isInteger(successLog.queueDepth)).toBe(true);
+  });
+
   it.each(["GATEWAY_BUSY", "KEY_POOL_EXHAUSTED"] as const)(
     "returns stable %s without calling Wind",
     async (code) => {
-      const pool = scriptedPool([{ ok: false, code, retryAfterMs: null }]);
+      const pool = scriptedPool([{ ok: false, code, retryAfterMs: null, queueDepth: 0 }]);
       const caller = scriptedCaller([]);
 
       const result = await invokeWindTool(REQUEST, dependencies(pool, caller));
@@ -468,9 +706,9 @@ describe("Wind invocation state machine", () => {
       initialCategory: "auth",
     });
     expect(caller.slots).toEqual([SECRET_02]);
-    expect(pool.reports.map((entry) => [entry.slotId, entry.category])).toEqual([
-      ["key-01", "auth"],
-      ["key-02", "success"],
+    expect(pool.reports.map((entry) => [entry.slotId, entry.category, entry.continuing ?? false])).toEqual([
+      ["key-01", "auth", true],
+      ["key-02", "success", false],
     ]);
     const logged = lines.map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
     expect(logged).toEqual([
@@ -539,7 +777,7 @@ describe("Wind invocation state machine", () => {
       initialCategory: "daily_quota",
     });
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "daily_quota", 1_700_003_600_000, NOW),
+      report("lease-01", "key-01", "daily_quota", 1_700_003_600_000, NOW, true),
       report("lease-02", "key-02", "success", null, NOW),
     ]);
   });
@@ -679,9 +917,9 @@ describe("Wind invocation state machine", () => {
       ["key-01", "key-02", "key-03"],
     ]);
     expect(pool.reports).toEqual([
-      report("lease-01", "key-01", "unknown", null, NOW),
-      report("lease-02", "key-02", "unknown", null, NOW),
-      report("lease-03", "key-03", "unknown", null, NOW),
+      report("lease-01", "key-01", "unknown", null, NOW, true),
+      report("lease-02", "key-02", "unknown", null, NOW, true),
+      report("lease-03", "key-03", "unknown", null, NOW, true),
     ]);
   });
 
@@ -745,9 +983,9 @@ describe("Wind invocation state machine", () => {
       content: [{ type: "text", text: "iWind request failed (WIND_REPEATED_SLOT)." }],
     });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports.map((entry) => [entry.leaseId, entry.category])).toEqual([
-      ["lease-01", "unknown"],
-      ["lease-repeat", "unknown"],
+    expect(pool.reports.map((entry) => [entry.leaseId, entry.category, entry.continuing ?? false])).toEqual([
+      ["lease-01", "unknown", true],
+      ["lease-repeat", "unknown", false],
     ]);
   });
 
@@ -762,9 +1000,9 @@ describe("Wind invocation state machine", () => {
 
     expect(result.notice).toMatchObject({ code: "WIND_KEY_ROTATION_FAILED" });
     expect(caller.slots).toEqual([SECRET_01]);
-    expect(pool.reports.map((entry) => [entry.leaseId, entry.category])).toEqual([
-      ["lease-01", "daily_quota"],
-      ["lease-repeat", "unknown"],
+    expect(pool.reports.map((entry) => [entry.leaseId, entry.category, entry.continuing ?? false])).toEqual([
+      ["lease-01", "daily_quota", true],
+      ["lease-repeat", "unknown", false],
     ]);
   });
 
@@ -795,6 +1033,8 @@ describe("Wind invocation state machine", () => {
       "domain",
       "durationMs",
       "noticeCode",
+      "queueDepth",
+      "queueWaitMs",
       "requestId",
       "responseBytes",
       "slotId",
@@ -881,13 +1121,13 @@ describe("Wind invocation state machine", () => {
       ),
     ]);
 
-    expect(results.every((result) => result.toolResult === SUCCESS)).toBe(true);
+    expect(results.filter((result) => result.toolResult === SUCCESS)).toHaveLength(2);
     expect(maxInFlight).toBe(1);
   });
 
   it("names the leased slot on a hard stop and leaves the pool-exhausted line without a slot", async () => {
     const stopPool = scriptedPool([
-      lease("key-01", "lease-01"),
+      { ...lease("key-01", "lease-01"), queueDepth: 3 },
       lease("key-02", "lease-02"),
     ]);
     const stopLines: string[] = [];
@@ -907,6 +1147,7 @@ describe("Wind invocation state machine", () => {
       expect.objectContaining({
         slotId: "key-01",
         status: "WIND_RESPONSE_TOO_LARGE",
+        queueDepth: 3,
       }),
     ]);
 
@@ -1183,7 +1424,7 @@ function scriptedPool(
       acquisitions.push({ requestId, attemptedSlotIds: [...attemptedSlotIds] });
       const outcome = remaining.shift();
       return (
-        outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null }
+        outcome ?? { ok: false, code: "KEY_POOL_EXHAUSTED", retryAfterMs: null, queueDepth: 0 }
       );
     },
     async report(outcome) {
@@ -1217,7 +1458,7 @@ function scriptedCaller(outcomes: readonly (CallToolResult | Error)[]): Scripted
 }
 
 function lease(slotId: SlotId, leaseId: string): AcquireLeaseResult {
-  return { ok: true, slotId, leaseId, expiresAt: NOW + 1_230_000 };
+  return { ok: true, slotId, leaseId, expiresAt: NOW + 1_230_000, queueDepth: 0 };
 }
 
 function report(
@@ -1226,8 +1467,16 @@ function report(
   category: ReportOutcomeInput["category"],
   resetAt: number | null,
   occurredAt: number,
+  continuing?: boolean,
 ): ReportOutcomeInput {
-  return { leaseId, slotId, category, resetAt, occurredAt };
+  return {
+    leaseId,
+    slotId,
+    category,
+    resetAt,
+    occurredAt,
+    ...(continuing === true ? { continuing: true } : {}),
+  };
 }
 
 function classifiedBody(code: string): WindCallFailure {

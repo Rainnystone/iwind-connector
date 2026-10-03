@@ -14,6 +14,8 @@ export interface GatewayLogEvent {
   readonly noticeCode: OpsNoticeV1["code"] | null;
   readonly upstreamStatus: number | null;
   readonly upstreamErrorCode: string | null;
+  readonly queueWaitMs: number;
+  readonly queueDepth: number;
 }
 
 export function emitLogEvent(
@@ -31,6 +33,12 @@ export function emitLogEvent(
     noticeCode: event.noticeCode,
     upstreamStatus: allowlistedUpstreamStatus(event.upstreamStatus),
     upstreamErrorCode: allowlistedUpstreamErrorCode(event.upstreamErrorCode),
+    queueWaitMs: allowlistedQueueCount(event.queueWaitMs),
+    queueDepth: allowlistedQueueCount(event.queueDepth),
   };
   sink(JSON.stringify(allowlistedEvent));
+}
+
+function allowlistedQueueCount(value: number): number {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
 }

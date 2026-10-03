@@ -268,7 +268,7 @@ describe("local KeyPool integration", () => {
     expect(await currentSlotId()).toBe("key-05");
   });
 
-  it("serializes overlapping logical requests through the one real coordination atom", async () => {
+  it("serves an overlapping call from the line and keeps one upstream call in flight", async () => {
     const caller = trackedCaller([SUCCESS, SUCCESS], 75);
 
     const results = await Promise.all([
@@ -282,7 +282,7 @@ describe("local KeyPool integration", () => {
       ),
     ]);
 
-    expect(results.every(({ toolResult }) => toolResult === SUCCESS)).toBe(true);
+    expect(results.filter(({ toolResult }) => toolResult === SUCCESS)).toHaveLength(2);
     expect(caller.maxInFlight).toBe(1);
     expect(caller.slots).toEqual(["key-05", "key-05"]);
   });
@@ -423,12 +423,14 @@ describe("local KeyPool integration", () => {
           requestId: "future-live-lease-overlap",
           attemptedSlotIds: [],
           now: FUTURE_BASE_TIME + 2,
+          deadlineAt: FUTURE_BASE_TIME + 2 + 30_000,
         }),
       ).resolves.toMatchObject({ ok: false, code: "GATEWAY_BUSY" });
       const acquired = await stub.acquireLease({
         requestId: "future-tail-acquire",
         attemptedSlotIds: [],
         now: FUTURE_BASE_TIME + 60_000,
+        deadlineAt: FUTURE_BASE_TIME + 60_000 + 30_000,
       });
       expect(acquired).toMatchObject({ ok: true, slotId: futureSlotId });
       if (!acquired.ok) throw new Error("fixture-future-tail-not-acquired");

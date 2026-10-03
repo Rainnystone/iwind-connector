@@ -31,7 +31,39 @@ const CREATE_LEASE = `
     lease_id TEXT NOT NULL,
     request_id TEXT NOT NULL,
     slot_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    granted_at INTEGER
+  )
+`;
+
+const CREATE_WAITLIST = `
+  CREATE TABLE IF NOT EXISTS waitlist (
+    request_id TEXT PRIMARY KEY,
+    ticket INTEGER NOT NULL,
+    deadline_at INTEGER,
+    last_seen_at INTEGER NOT NULL
+  )
+`;
+
+const CREATE_RESERVATION = `
+  CREATE TABLE IF NOT EXISTS reservation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    request_id TEXT NOT NULL,
     expires_at INTEGER NOT NULL
+  )
+`;
+
+const CREATE_REFUSAL_HORIZON = `
+  CREATE TABLE IF NOT EXISTS refusal_horizon (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    at INTEGER NOT NULL
+  )
+`;
+
+const CREATE_LEASE_HOLD = `
+  CREATE TABLE IF NOT EXISTS lease_hold (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    duration_ms INTEGER NOT NULL
   )
 `;
 
@@ -161,6 +193,12 @@ function initializeLegacySchema(
 
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
+    ensureColumn(sql, "lease", "granted_at", "INTEGER");
+    sql.exec(CREATE_WAITLIST);
+    ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
+    sql.exec(CREATE_RESERVATION);
+    sql.exec(CREATE_LEASE_HOLD);
+    sql.exec(CREATE_REFUSAL_HORIZON);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     synchronizeLegacySlots(sql, definitions);
@@ -225,6 +263,12 @@ function initializeVersionedSchema(
     sql.exec(CREATE_SCHEMA_MIGRATIONS);
     sql.exec(CREATE_SLOTS);
     sql.exec(CREATE_LEASE);
+    ensureColumn(sql, "lease", "granted_at", "INTEGER");
+    sql.exec(CREATE_WAITLIST);
+    ensureColumn(sql, "waitlist", "deadline_at", "INTEGER");
+    sql.exec(CREATE_RESERVATION);
+    sql.exec(CREATE_LEASE_HOLD);
+    sql.exec(CREATE_REFUSAL_HORIZON);
     sql.exec(CREATE_PENDING_TEST_OUTCOME);
     sql.exec(CREATE_OAUTH_REPLAY_MARKER);
     sql.exec(CREATE_POOL_STATE);
@@ -544,6 +588,17 @@ function validatePersistenceConfiguration(configuration: KeyPoolPersistenceConfi
   ) {
     throw new Error("INVALID_KEY_POOL_SCHEMA_MODE");
   }
+}
+
+function ensureColumn(sql: SqlStorage, table: string, column: string, type: string): void {
+  const present = sql
+    .exec<Record<string, SqlStorageValue> & { name: string }>(
+      "SELECT name FROM pragma_table_info(?)",
+      table,
+    )
+    .toArray()
+    .some(({ name }) => name === column);
+  if (!present) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 function readSchemaVersion(sql: SqlStorage): number {
