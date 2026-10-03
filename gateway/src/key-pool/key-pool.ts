@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { WindFailureCategory } from "../errors/types";
-import { WIND_ATTEMPT_TIMEOUT_MS } from "../invocation/wind-attempt";
+import { MAX_SAME_SLOT_RETRY_DELAY_MS } from "../errors/classifier";
+import { WIND_ATTEMPT_TIMEOUT_MS } from "../upstream/attempt-timeout";
 import { nextSlotId, orderSlotRing } from "./slot-ring";
 import { getKeyPoolConfigurationForObject } from "./slots";
 import {
@@ -21,15 +22,14 @@ import type {
   SlotState,
 } from "./types";
 
-const SAME_SLOT_RETRY_DELAY_MS = 500;
-const LEASE_MARGIN_MS = 9_500;
+const LEASE_MARGIN_MS = 5_000;
 export const LEASE_TTL_MS =
-  2 * WIND_ATTEMPT_TIMEOUT_MS + SAME_SLOT_RETRY_DELAY_MS + LEASE_MARGIN_MS;
+  2 * WIND_ATTEMPT_TIMEOUT_MS + MAX_SAME_SLOT_RETRY_DELAY_MS + LEASE_MARGIN_MS;
 export const OAUTH_REPLAY_TTL_MS = 600_000;
 const WAITLIST_STALE_AFTER_MS = 5_000;
 const RESERVATION_TTL_MS = 2_000;
-const ADMIT_BUDGET_MS = 30_000;
 const DEFAULT_HOLD_MS = 8_000;
+const MIN_REFUSAL_RETRY_MS = 1_000;
 
 type SlotRow = Record<string, SqlStorageValue> & {
   slot_id: string;
@@ -47,6 +47,7 @@ type LeaseRow = Record<string, SqlStorageValue> & {
   request_id: string;
   slot_id: string;
   expires_at: number;
+  granted_at: number | null;
 };
 
 type ReservationRow = Record<string, SqlStorageValue> & {
@@ -88,39 +89,29 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const storedDefinitions = this.readStoredSlotDefinitions();
       assertAttemptedSlotIds(input.attemptedSlotIds, storedDefinitions);
       this.activateDueSlots(input.now);
-      const isHead = this.touchWaitlist(input.requestId, input.now);
-      const current = this.readLease();
-      if (current !== null && current.expires_at > input.now) {
-        const remainingMs = current.expires_at - input.now;
-        const elapsedMs = input.now - (current.expires_at - LEASE_TTL_MS);
-        const projectedMs = this.projectedWaitMs(input.requestId, remainingMs, elapsedMs);
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
-        if (refused !== null) return refused;
-        return this.busy(this.inLineRetryMs(remainingMs, projectedMs));
-      }
+      this.dropDepartedWaiters(input.now);
+      const lease = this.readLease();
+      const liveLease = lease !== null && lease.expires_at > input.now ? lease : null;
       const reservation = this.readLiveReservation(input.now);
-      const holdsReservation =
-        reservation !== null && reservation.request_id === input.requestId;
-      if (reservation !== null && !holdsReservation) {
-        const remainingMs = reservation.expires_at - input.now;
-        const projectedMs =
-          remainingMs + this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
-        if (refused !== null) return refused;
-        return this.busy(remainingMs);
-      }
-      if (!holdsReservation && !isHead) {
-        const projectedMs =
-          this.cursorCooldownRemainingMs(input.now) +
-          this.callersAhead(input.requestId) * this.medianHoldMs();
-        const refused = this.refuseIfOverBudget(input.requestId, projectedMs);
-        if (refused !== null) return refused;
-        return this.busy(projectedMs > 0 ? projectedMs : null);
-      }
+      const holdsReservation = reservation !== null && reservation.request_id === input.requestId;
+      const otherReservation = holdsReservation ? null : reservation;
+
       if (holdsReservation) {
         this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
+      } else {
+        const waitMs = this.estimatedWaitMs(input.requestId, input.now, liveLease, otherReservation);
+        if (this.isWaiting(input.requestId)) {
+          this.refreshWaiter(input.requestId, input.now);
+        } else {
+          const budgetMs = input.deadlineAt - input.now;
+          if (waitMs > budgetMs) return this.refuse(input.now, waitMs, budgetMs);
+          this.joinWaitlist(input.requestId, input.now, input.deadlineAt);
+        }
+        if (liveLease !== null || otherReservation !== null || !this.isHead(input.requestId)) {
+          return this.busy(waitMs, true);
+        }
       }
-      if (current !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
+      if (lease !== null) this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
 
       const cursorSlotId = this.readCursor();
       const slots = orderSlotRing(
@@ -136,10 +127,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           cursorSlot.cooldown_until === null
             ? null
             : Math.max(0, cursorSlot.cooldown_until - input.now);
-        if (retryAfterMs !== null && retryAfterMs > ADMIT_BUDGET_MS) {
-          this.deleteWaitlistRow(input.requestId);
-        }
-        return this.busy(retryAfterMs);
+        return this.busy(retryAfterMs, !holdsReservation);
       }
       const slot = slots.find(
         (candidate) =>
@@ -153,6 +141,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
           code: "KEY_POOL_EXHAUSTED",
           retryAfterMs: next === null ? null : Math.max(0, next - input.now),
           queueDepth: this.waitlistDepth(),
+          inLine: false,
         };
       }
 
@@ -163,11 +152,13 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
       const slotId = this.asPersistedSlotId(slot.slot_id);
       this.writeCursor(slotId, input.now);
       this.ctx.storage.sql.exec(
-        "INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at) VALUES (1, ?, ?, ?, ?)",
+        `INSERT INTO lease (singleton, lease_id, request_id, slot_id, expires_at, granted_at)
+         VALUES (1, ?, ?, ?, ?, ?)`,
         leaseId,
         input.requestId,
         slot.slot_id,
         expiresAt,
+        input.now,
       );
       return { ok: true, leaseId, slotId, expiresAt, queueDepth };
     });
@@ -204,7 +195,7 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
         input.occurredAt,
         input.slotId,
       );
-      this.recordHold(input.occurredAt - (lease.expires_at - LEASE_TTL_MS));
+      if (lease.granted_at !== null) this.recordHold(input.occurredAt - lease.granted_at);
       this.ctx.storage.sql.exec("DELETE FROM lease WHERE singleton = 1");
       if (input.continuing === true) {
         this.ctx.storage.sql.exec("DELETE FROM reservation WHERE singleton = 1");
@@ -343,71 +334,76 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     await this.syncNextAlarm();
   }
 
-  private touchWaitlist(requestId: string, now: number): boolean {
-    const existing = this.ctx.storage.sql
-      .exec<Record<string, SqlStorageValue> & { ticket: number }>(
-        "SELECT ticket FROM waitlist WHERE request_id = ?",
-        requestId,
-      )
-      .toArray()[0];
-    if (existing === undefined) {
-      const nextTicket =
-        this.ctx.storage.sql
-          .exec<Record<string, SqlStorageValue> & { ticket: number }>(
-            "SELECT COALESCE(MAX(ticket), 0) AS ticket FROM waitlist",
-          )
-          .one().ticket + 1;
-      this.ctx.storage.sql.exec(
-        "INSERT INTO waitlist (request_id, ticket, last_seen_at) VALUES (?, ?, ?)",
-        requestId,
-        nextTicket,
-        now,
-      );
-    } else {
-      this.ctx.storage.sql.exec(
-        "UPDATE waitlist SET last_seen_at = ? WHERE request_id = ?",
-        now,
-        requestId,
-      );
-    }
+  private dropDepartedWaiters(now: number): void {
     this.ctx.storage.sql.exec(
-      "DELETE FROM waitlist WHERE last_seen_at < ?",
+      "DELETE FROM waitlist WHERE deadline_at <= ? OR last_seen_at < ?",
+      now,
       now - WAITLIST_STALE_AFTER_MS,
     );
+  }
+
+  private isWaiting(requestId: string): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec("SELECT 1 FROM waitlist WHERE request_id = ?", requestId)
+        .toArray().length > 0
+    );
+  }
+
+  private joinWaitlist(requestId: string, now: number, deadlineAt: number): void {
+    const nextTicket =
+      this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue> & { ticket: number }>(
+          "SELECT COALESCE(MAX(ticket), 0) AS ticket FROM waitlist",
+        )
+        .one().ticket + 1;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO waitlist (request_id, ticket, deadline_at, last_seen_at) VALUES (?, ?, ?, ?)",
+      requestId,
+      nextTicket,
+      deadlineAt,
+      now,
+    );
+  }
+
+  private refreshWaiter(requestId: string, now: number): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE waitlist SET last_seen_at = ? WHERE request_id = ?",
+      now,
+      requestId,
+    );
+  }
+
+  private isHead(requestId: string): boolean {
     const head = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { request_id: string }>(
         "SELECT request_id FROM waitlist ORDER BY ticket ASC LIMIT 1",
       )
-      .one();
-    return head.request_id === requestId;
+      .toArray()[0];
+    return head?.request_id === requestId;
   }
 
-  private projectedWaitMs(requestId: string, remainingMs: number, elapsedMs: number): number {
-    return (
-      this.expectedHoldLeftMs(remainingMs, elapsedMs) +
-      this.callersAhead(requestId) * this.medianHoldMs()
-    );
-  }
-
-  private expectedHoldLeftMs(remainingMs: number, elapsedMs: number): number {
+  private estimatedWaitMs(
+    requestId: string,
+    now: number,
+    liveLease: LeaseRow | null,
+    otherReservation: ReservationRow | null,
+  ): number {
     const medianMs = this.medianHoldMs();
-    if (elapsedMs < medianMs) return Math.min(remainingMs, medianMs - elapsedMs);
-    return Math.min(remainingMs, ADMIT_BUDGET_MS);
+    let blockerMs = this.cursorCooldownRemainingMs(now);
+    if (liveLease !== null) blockerMs = holderRemainingMs(liveLease, now, medianMs);
+    else if (otherReservation !== null) blockerMs = otherReservation.expires_at - now + medianMs;
+    return blockerMs + this.callersAhead(requestId) * medianMs;
   }
 
-  private inLineRetryMs(remainingMs: number, projectedMs: number): number {
-    if (remainingMs <= ADMIT_BUDGET_MS) return remainingMs;
-    return projectedMs > 0 ? projectedMs : Math.min(remainingMs, ADMIT_BUDGET_MS);
-  }
-
-  private refuseIfOverBudget(requestId: string, projectedMs: number): AcquireLeaseResult | null {
-    if (projectedMs <= ADMIT_BUDGET_MS) return null;
-    this.deleteWaitlistRow(requestId);
-    return this.busy(projectedMs);
-  }
-
-  private busy(retryAfterMs: number | null): AcquireLeaseResult {
-    return { ok: false, code: "GATEWAY_BUSY", retryAfterMs, queueDepth: this.waitlistDepth() };
+  private busy(retryAfterMs: number | null, inLine: boolean): AcquireLeaseResult {
+    return {
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs,
+      queueDepth: this.waitlistDepth(),
+      inLine,
+    };
   }
 
   private waitlistDepth(): number {
@@ -432,23 +428,34 @@ export class KeyPool extends DurableObject<Cloudflare.Env> {
     );
   }
 
-  private medianHoldMs(): number {
+  private refuse(now: number, waitMs: number, budgetMs: number): AcquireLeaseResult {
+    const horizonAt =
+      this.ctx.storage.sql
+        .exec<Record<string, SqlStorageValue> & { at: number }>(
+          "SELECT at FROM refusal_horizon WHERE singleton = 1",
+        )
+        .toArray()[0]?.at ?? now;
+    const rejoinAt = Math.max(now + waitMs - budgetMs, now + MIN_REFUSAL_RETRY_MS, horizonAt);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO refusal_horizon (singleton, at) VALUES (1, ?)
+       ON CONFLICT(singleton) DO UPDATE SET at = excluded.at`,
+      rejoinAt + this.medianHoldMs(),
+    );
+    return this.busy(rejoinAt - now, false);
+  }
+
+  private holdSamples(): readonly number[] {
     const samples = this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue> & { duration_ms: number }>(
-        "SELECT duration_ms FROM lease_hold",
+        "SELECT duration_ms FROM lease_hold WHERE duration_ms >= 1 ORDER BY duration_ms ASC",
       )
       .toArray()
-      .map((row) => row.duration_ms)
-      .filter((durationMs) => durationMs >= 1)
-      .sort((left, right) => left - right);
-    if (samples.length === 0) return DEFAULT_HOLD_MS;
-    const mid = Math.floor(samples.length / 2);
-    const upper = samples[mid];
-    if (upper === undefined) return DEFAULT_HOLD_MS;
-    if (samples.length % 2 === 1) return upper;
-    const lower = samples[mid - 1];
-    const median = lower === undefined ? upper : Math.round((lower + upper) / 2);
-    return median > 0 ? median : DEFAULT_HOLD_MS;
+      .map((row) => row.duration_ms);
+    return samples.length === 0 ? [DEFAULT_HOLD_MS] : samples;
+  }
+
+  private medianHoldMs(): number {
+    return median(this.holdSamples());
   }
 
   private cursorCooldownRemainingMs(now: number): number {
@@ -664,6 +671,21 @@ function outcomeTransition(input: ReportOutcomeInput, currentState: SlotState): 
   }
 }
 
+// Every blocker counts down at least as fast as the clock, so a refused caller that returns at its
+// rejoin time fits its budget unless the line is still full behind an overdue holder.
+function holderRemainingMs(lease: LeaseRow, now: number, medianMs: number): number {
+  if (lease.granted_at === null) return 0;
+  return Math.max(0, medianMs - (now - lease.granted_at));
+}
+
+function median(ascending: readonly number[]): number {
+  const mid = Math.floor(ascending.length / 2);
+  const upper = ascending[mid] ?? 0;
+  if (ascending.length % 2 === 1) return upper;
+  const lower = ascending[mid - 1] ?? upper;
+  return Math.round((lower + upper) / 2);
+}
+
 function isKnownFutureReset(value: number | null, now: number): value is number {
   return value !== null && Number.isFinite(value) && value > now;
 }
@@ -680,6 +702,9 @@ function assertAcquireLeaseInputShape(input: AcquireLeaseInput): void {
   }
   if (!Array.isArray(input.attemptedSlotIds)) {
     throw new Error("INVALID_ATTEMPTED_SLOTS");
+  }
+  if (typeof input.deadlineAt !== "number" || !Number.isFinite(input.deadlineAt)) {
+    throw new Error("INVALID_ACQUIRE_INPUT");
   }
 }
 

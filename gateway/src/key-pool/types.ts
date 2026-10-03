@@ -7,6 +7,7 @@ export interface AcquireLeaseInput {
   readonly requestId: string;
   readonly attemptedSlotIds: readonly SlotId[];
   readonly now: number;
+  readonly deadlineAt: number;
 }
 
 export type SlotState =
@@ -30,6 +31,7 @@ export type AcquireLeaseResult =
       readonly code: "GATEWAY_BUSY" | "KEY_POOL_EXHAUSTED";
       readonly retryAfterMs: number | null;
       readonly queueDepth: number;
+      readonly inLine: boolean;
     };
 
 export interface ReportOutcomeInput {

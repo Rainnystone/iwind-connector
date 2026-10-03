@@ -12,7 +12,7 @@ function acquireLease(
   requestId: string,
   now: number,
 ): Promise<AcquireLeaseResult> {
-  return stub.acquireLease({ requestId, attemptedSlotIds: [], now });
+  return stub.acquireLease({ requestId, attemptedSlotIds: [], now, deadlineAt: now + 30_000 });
 }
 
 afterEach(async () => {
@@ -98,9 +98,42 @@ describe("KeyPool contention", () => {
     await expect(resultPromise).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 32_000,
+      retryAfterMs: 2_000,
       queueDepth: 3,
+      inLine: false,
     });
+  });
+
+  it("returns a refusal on the first round trip because it is not in line, whatever its retry time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+    const refusal: AcquireLeaseResult = {
+      ok: false,
+      code: "GATEWAY_BUSY",
+      retryAfterMs: 2_000,
+      queueDepth: 4,
+      inLine: false,
+    };
+    const calls: AcquireLeaseInput[] = [];
+    const fakeEnv = {
+      KEY_POOL: {
+        getByName: () => ({
+          acquireLease: (input: AcquireLeaseInput) => {
+            calls.push(input);
+            return Promise.resolve(refusal);
+          },
+        }),
+      },
+    } as unknown as Parameters<typeof acquireKeyPoolLease>[0];
+
+    const resultPromise = acquireKeyPoolLease(fakeEnv, "refused");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(resultPromise).resolves.toEqual(refusal);
+    expect(calls).toEqual([
+      { requestId: "refused", attemptedSlotIds: [], now: BASE_TIME, deadlineAt: BASE_TIME + 30_000 },
+    ]);
   });
 
   it("returns the KeyPool retry time when a waiter is not granted within 30 seconds", async () => {
@@ -117,6 +150,7 @@ describe("KeyPool contention", () => {
       code: "GATEWAY_BUSY",
       retryAfterMs: 8_000,
       queueDepth: 1,
+      inLine: false,
     });
   });
 

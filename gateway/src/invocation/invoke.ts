@@ -10,11 +10,11 @@ import { getKeyPoolConfiguration } from "../key-pool/slots";
 import type { AcquireLeaseResult, ReportOutcomeInput, SlotId } from "../key-pool/types";
 import { emitLogEvent, type GatewayLogEvent } from "../logging/event";
 import type { OpsNoticeV1 } from "../notices/types";
+import { WIND_ATTEMPT_TIMEOUT_MS } from "../upstream/attempt-timeout";
 import { createWindToolCaller, WindCallFailure } from "../upstream/call-tool";
 import { MAX_ERROR_ENVELOPE_BYTES } from "../upstream/result-limit";
 
 import { MissingWindSecretError, resolveWindSecret } from "./resolve-secret";
-import { WIND_ATTEMPT_TIMEOUT_MS } from "./wind-attempt";
 import type {
   HeldLease,
   InvocationDependencies,

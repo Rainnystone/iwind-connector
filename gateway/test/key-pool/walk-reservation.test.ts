@@ -22,7 +22,7 @@ function acquireLease(
   now: number,
   attemptedSlotIds: readonly SlotId[] = [],
 ): Promise<AcquireLeaseResult> {
-  return stub.acquireLease({ requestId, attemptedSlotIds, now });
+  return stub.acquireLease({ requestId, attemptedSlotIds, now, deadlineAt: now + 30_000 });
 }
 
 afterEach(async () => {
@@ -52,14 +52,16 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-a", reportedAt + 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 1,
+      retryAfterMs: RESERVATION_MS - 1 + 10,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + 2)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 2,
+      retryAfterMs: RESERVATION_MS - 2 + 20,
       queueDepth: 2,
+      inLine: true,
     });
 
     const next = await acquireLease(stub, "walker", reportedAt + 3, ["key-01"]);
@@ -92,14 +94,16 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-a", reportedAt + RESERVATION_MS - 1)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: 1,
+      retryAfterMs: 1 + 10,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-b", reportedAt + RESERVATION_MS)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
       retryAfterMs: 10,
       queueDepth: 2,
+      inLine: true,
     });
     await expect(acquireLease(stub, "waiter-a", reportedAt + RESERVATION_MS)).resolves.toMatchObject({
       ok: true,
@@ -127,14 +131,16 @@ describe("walk reservation", () => {
     await expect(acquireLease(stub, "waiter-head", reportedAt + 50)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 50,
+      retryAfterMs: RESERVATION_MS - 50 + 10,
       queueDepth: 1,
+      inLine: true,
     });
     await expect(acquireLease(stub, "stranger", reportedAt + 60)).resolves.toEqual({
       ok: false,
       code: "GATEWAY_BUSY",
-      retryAfterMs: RESERVATION_MS - 60,
+      retryAfterMs: RESERVATION_MS - 60 + 20,
       queueDepth: 2,
+      inLine: true,
     });
 
     const next = await acquireLease(stub, "walker", reportedAt + 70, ["key-01"]);
@@ -233,6 +239,7 @@ describe("walk reservation", () => {
         requestId: "following-request",
         attemptedSlotIds: [],
         now: Date.now() + 5_001,
+        deadlineAt: Date.now() + 5_001 + 30_000,
       }),
     ).resolves.toMatchObject({ ok: true, slotId: "key-01" });
   });
@@ -339,6 +346,7 @@ function contendingWaiters(stub: ReturnType<typeof primaryPool>): { stop: () => 
           requestId,
           attemptedSlotIds: [],
           now: Date.now(),
+          deadlineAt: Date.now() + 30_000,
         });
         if (!outcome.ok && outcome.code === "GATEWAY_BUSY") busyPolls += 1;
         if (outcome.ok) {
